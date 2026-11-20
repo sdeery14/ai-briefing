@@ -1,15 +1,21 @@
 # AI Briefing architecture decision records
 
-All documents are **Proposed**, not accepted. Acceptance requires owner review and an explicit decision. A future change to an Accepted ADR is recorded by a new ADR that supersedes it.
+All records are **Proposed**. None is accepted until the owner says so explicitly. A change to an accepted ADR is made by a new ADR that supersedes it.
 
-| ADR | Decision | Status |
-|---|---|---|
-| [001](001-modular-monolith.md) | Python modular monolith; independent of Home Assistant | Proposed |
-| [002](002-persistence.md) | SQLite and append-only provenance/assessment history | Proposed |
-| [003](003-hybrid-discovery.md) | Curated collection + selective search/research | Proposed |
-| [004](004-editorial-evidence.md) | Evidence-first editorial classifications | Proposed |
-| [005](005-learning-curriculum.md) | Persistent prerequisite-aware curriculum | Proposed |
-| [006](006-briefing-consumer.md) | Versioned report, read-only HA handoff | Proposed |
-| [007](007-offline-evaluation.md) | Blind, offline editorial benchmarks | Proposed |
-| [008](008-pi-operations-and-security.md) | Scheduled Pi jobs, bounded resources and untrusted-input controls | Proposed |
-| [009](009-observability-and-evaluations.md) | MLflow-by-default observability, custom rubric evaluators, calibrated judges | Proposed |
+These records accompany [RFC v0.3](../rfc/AI-Briefing-RFC-v0.3.md). They were revised after the independent review of packet v0.2; see [`docs/reviews/v0.3-reconciliation.md`](../reviews/v0.3-reconciliation.md).
+
+| ADR | Decision | Status | Change in v0.3 |
+|---|---|---|---|
+| [001](001-modular-monolith.md) | Python modular monolith, independent of Home Assistant | Proposed | Alternatives and acceptance checks added |
+| [002](002-persistence.md) | SQLite as the system of record, append-only history | Proposed | New entities; input snapshots; file lock; storage and backup rules |
+| [003](003-source-discovery.md) | Curated discovery first; search and research deferred | Proposed | Narrowed; screening tier; grouping mechanism |
+| [004](004-editorial-evidence.md) | Evidence records and a deterministic editorial policy | Proposed | Assessment, policy and selection separated; integrity checks |
+| [005](005-learning-curriculum.md) | Concept note in V1; persistent curriculum in M6 | Proposed | Curriculum deferred, not dropped |
+| [006](006-briefing-consumer.md) | Versioned briefing; file exchange with Home Assistant | Proposed | Full briefing in email; authenticated feedback path |
+| [007](007-evaluation-strategy.md) | Deterministic gates and prospective evaluation | Proposed | Rewritten; benchmark reclassified |
+| [008](008-pi-operations-and-security.md) | Scheduled container jobs with bounded privileges | Proposed | Host facts; deployment preconditions; backup |
+| [009](009-orchestration-and-observability.md) | Plain Python, one provider, narrow observability | Proposed | Tracing narrowed; budget; evaluation moved to 007 |
+| [010](010-content-rights-and-retention.md) | Content rights and retention | Proposed | New |
+| [011](011-development-workflow-and-merge-authority.md) | Development workflow and merge authority | Proposed | New |
+
+Each record has the same sections: context, decision, alternatives considered, consequences, acceptance checks, revisit when.
