@@ -12,8 +12,9 @@ Nothing in this document is applied automatically. The settings in section 3 are
 | Offline guard | `scripts/offline_guard.py` | pytest plugin that makes any non-loopback network access in a test raise an error | Working |
 | Merge-eligibility report | `.github/workflows/merge-eligibility.yml`, `scripts/merge_eligibility.py` | Reports whether a pull request touches an ADR-011 protected path | Working once this is on `main` (see section 5) |
 | Code owners | `.github/CODEOWNERS` | Names the owner for every protected path | Present; not enforced until a ruleset requires it |
-| Ruleset on `main` | GitHub settings | Requires pull requests and passing checks | **Owner to configure** |
-| Codex review | GitHub and Codex settings | Automatic review of pull requests | **Owner to enable** |
+| Ruleset on `main` | GitHub settings | Requires pull requests and passing checks | Configured and tested by the owner |
+| Codex review | GitHub and Codex settings | Automatic review of pull requests | Enabled |
+| `/round` skill | `.claude/skills/round/`, `scripts/round_*.py`, `scripts/pr_wait.py`, `scripts/review_threads.py` | Works a milestone's owner-authorised issues into labelled pull requests. Has no merge step. | Working; never yet run on a real milestone |
 
 ### What the checks cover today
 
