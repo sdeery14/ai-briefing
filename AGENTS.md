@@ -8,13 +8,13 @@ These instructions apply to every coding agent and reviewer working in this repo
 
 ## Current state
 
-**No application code exists yet.** The repository holds documentation only. There is no package, no test suite, no CI and no configured GitHub checks. Those arrive in later M0 pull requests and in M1.
+**No application code exists yet.** There is no application package and there are no application tests. What exists is documentation and development tooling: CI that lints, type-checks and tests the repository's own scripts, an offline guard for tests, a secret scan, and a merge-eligibility report. The ruleset on `main` and Codex review are configured by the owner and may not be in place yet; see [repository safeguards](docs/operations/repository-safeguards.md).
 
 Where this file describes tooling, it says whether the tooling exists. Do not report a command as run, or a check as passed, unless it exists and you ran it.
 
 ## Instructions are not enforcement
 
-Nothing in this file restricts what an agent can technically do. Branch protection, code-owner review and a CI-computed merge-eligibility check are set up in a later M0 pull request (ADR-011). Until then, and afterwards too, follow these rules because they are the rules, not because something stops you.
+Nothing in this file restricts what an agent can technically do. `CODEOWNERS` and the merge-eligibility report describe the protected paths but do not enforce review, and the ruleset on `main` is the owner's to configure ([repository safeguards](docs/operations/repository-safeguards.md)). Before and after that, follow these rules because they are the rules, not because something stops you.
 
 ## Hard limits
 
@@ -66,6 +66,8 @@ A change to any of these needs the owner's explicit review, however small and ho
 
 Most of these paths do not exist yet. The list is from ADR-011 and applies as they are created.
 
+Golden files live in a `golden/` directory and recorded model responses in a `recorded/` directory, anywhere under `tests/`. That is how they are recognised, so do not put them elsewhere. The patterns are defined once, in `scripts/merge_eligibility.py`; `.github/CODEOWNERS` is generated from it and must not be edited by hand.
+
 Do not edit a protected path as a side effect of other work. If an issue seems to need it and does not say so, ask.
 
 ## Architecture and code conventions
@@ -115,7 +117,17 @@ Do not edit a protected path as a side effect of other work. If an issue seems t
 
 ## Commands
 
-**Planned, not yet available.** The package and CI do not exist. Once M1 issue 1.1 and the M0 CI pull request have merged, the intended local checks are `uv`-run linting (Ruff), strict type checking (mypy) and pytest. This section will be replaced with exact commands when they work. Until then there are no commands to run, and a pull request should say so.
+These work today and are what CI runs. They cover the development tooling in `scripts/` and `tests/` only; there is no application code for them to check yet, and there are no application commands.
+
+```sh
+uv sync --locked --group dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest
+```
+
+Tests run with the offline guard on: any network access other than loopback raises `NetworkAccessBlocked`. CI pins `uv` 0.9.9; use the same version when changing `uv.lock`.
 
 ## Code review guidelines
 
@@ -149,6 +161,6 @@ A P0 is reported at once and stated first. It is not left for an agent to fix on
 
 Say when a finding is a judgement call. Each finding is one thread at the line it concerns: what goes wrong, the concrete input or sequence that shows it, and the change that fixes it.
 
-Once linting and type checking exist, do not report what they already enforce.
+Do not report what Ruff and mypy already enforce.
 
-Automated Codex review is **not yet enabled** on this repository. It is switched on by the owner in a later M0 step. These guidelines take effect then.
+Automated Codex review is switched on by the owner ([repository safeguards](docs/operations/repository-safeguards.md), section 3.5) and may not be enabled yet. These guidelines take effect when it is.

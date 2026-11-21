@@ -1,0 +1,85 @@
+# Development tooling only. There is no application package yet: M1 issue 1.1 adds
+# src/ai_briefing, the build backend, runtime dependencies and the CLI entry point.
+# Until then this file exists so that linting, type checking and tests of the
+# repository's own tooling (scripts/ and tests/) are reproducible.
+
+[project]
+name = "ai-briefing"
+version = "0.0.0"
+description = "Evidence-first AI intelligence and learning briefings."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "pytest>=8.3",
+]
+
+[tool.uv]
+# Nothing to build or install yet; see the note at the top of this file.
+package = false
+# Do not resolve to releases newer than this date. Raising it is a dependency change
+# and needs owner review (ADR-011).
+exclude-newer = "2026-11-07T00:00:00Z"
+
+# ---------------------------------------------------------------------------
+# Lint and format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["scripts", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # bugbear
+  "SIM", # simplify
+  "C4",  # comprehensions
+  "PT",  # pytest style
+  "RUF", # ruff-specific
+  "N",   # naming
+  "S",   # bandit-style security checks
+  "T20", # no stray print()
+]
+ignore = [
+  "E501", # line length is enforced by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "S101", # assert is the point of a test
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["merge_eligibility", "offline_guard"]
+
+# ---------------------------------------------------------------------------
+# Types: strict.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["scripts", "tests"]
+mypy_path = ["scripts"]
+strict = true
+warn_unreachable = true
+pretty = true
+show_error_codes = true
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.3"
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true

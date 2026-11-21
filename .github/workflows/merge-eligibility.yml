@@ -1,0 +1,63 @@
+name: Merge eligibility
+
+# Reports whether a pull request touches a protected path (ADR-011).
+#
+# ADR-011 Phase A: REPORT ONLY. The job succeeds whether or not the pull request is
+# eligible. It must not be made a required check in Phase A, and it never merges anything.
+#
+# Why `pull_request_target`: the workflow file and the script it runs both come from the
+# base branch, so a pull request cannot rewrite the logic that judges it. With plain
+# `pull_request` the workflow definition would come from the pull request itself.
+#
+# What makes that safe:
+#   - The only checkout is of the BASE commit, and only one file from it.
+#   - No code, script, dependency or configuration from the pull request is executed.
+#   - The changed-file list is read through the GitHub API.
+#   - The token is read-only. There are no secrets in this workflow.
+#   - Values from the event reach the shell only through `env`, never by interpolation
+#     into the script text.
+#   - File names are untrusted. The script matches and prints them; it never evaluates them.
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: merge-eligibility-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  report:
+    name: Merge eligibility (report only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      eligible: ${{ steps.evaluate.outputs.eligible }}
+      result: ${{ steps.evaluate.outputs.result }}
+    steps:
+      - name: Check out the script from the base branch only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: |
+            scripts/merge_eligibility.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Evaluate the changed-file list
+        id: evaluate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 scripts/merge_eligibility.py \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --github-output "$GITHUB_OUTPUT"
