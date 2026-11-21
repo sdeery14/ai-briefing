@@ -279,3 +279,5 @@ Exit criteria:
 1. Lessons are delivered in order for 14 days and resume correctly after an interruption.
 2. No progress state is recorded without its required evidence.
 3. Recall checks are answered through the feedback path and stored.
+
+<!-- Disposable safeguard validation B. Not for merging. -->
