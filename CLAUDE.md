@@ -16,6 +16,7 @@ Notes for Claude Code sessions, beyond what AGENTS.md says. AGENTS.md is the sha
 | Rules for all agents and reviewers | `AGENTS.md` |
 | Development workflow and merge authority | `docs/adr/011-development-workflow-and-merge-authority.md` |
 | CI checks, protected paths in practice, owner's GitHub settings | `docs/operations/repository-safeguards.md` |
+| The `/round` skill, its one configuration file and its helper scripts | `.claude/skills/round/`, `scripts/round_*.py`, `scripts/pr_wait.py`, `scripts/review_threads.py` |
 
 ## Finding the current work
 

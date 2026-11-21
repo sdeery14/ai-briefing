@@ -1,0 +1,28 @@
+{
+  "schema": "round_config.v1",
+  "phase": "A",
+  "merge_authority": "owner-only",
+  "repository": "sdeery14/ai-briefing",
+  "default_branch": "main",
+  "milestone_title_pattern": "^M[0-9]+\\b",
+  "branch_format": "issue-{number}-{slug}",
+  "allowed_authors": ["sdeery14"],
+  "reviewer": {
+    "login": "chatgpt-codex-connector[bot]",
+    "state_marker": "codex-review-state:v1",
+    "request_comment": "@codex review"
+  },
+  "required_checks": ["Lint and types", "Tests (offline)", "Secret scan"],
+  "informational_checks": ["Merge eligibility (report only)"],
+  "protected_paths_source": "scripts/merge_eligibility.py",
+  "wait": {
+    "timeout_minutes": 45,
+    "poll_seconds": 30
+  },
+  "max_fix_rounds": 2,
+  "labels": {
+    "ready": "ready-for-owner",
+    "needs_human": "needs-human",
+    "skip": ["needs-human", "question"]
+  }
+}

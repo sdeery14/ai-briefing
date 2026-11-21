@@ -58,9 +58,21 @@ ignore = [
 "tests/**" = [
   "S101", # assert is the point of a test
 ]
+"scripts/**" = [
+  "S603", # round_lib runs `gh` with a checked argument list; no shell, no untrusted command
+  "S607",
+]
 
 [tool.ruff.lint.isort]
-known-first-party = ["merge_eligibility", "offline_guard"]
+known-first-party = [
+  "merge_eligibility",
+  "offline_guard",
+  "pr_wait",
+  "review_threads",
+  "round_lib",
+  "round_outcome",
+  "round_plan",
+]
 
 # ---------------------------------------------------------------------------
 # Types: strict.
