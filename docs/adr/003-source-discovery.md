@@ -15,6 +15,8 @@ v0.1 put three discovery mechanisms in V1: curated feeds, search-provider discov
 2. Hacker News through its public API, as a discovery and attention signal.
 3. Reddit and other community sources, search-provider discovery and research-on-demand are deferred to M5. They are added only when coverage analysis in M4 shows a gap they would close.
 
+A first list of fifteen candidates, with what was verified about each, is in [`docs/planning/source-catalogue-draft.md`](../planning/source-catalogue-draft.md). It is a draft for the owner's editorial approval; no source in it is enabled.
+
 Each catalogue entry records its source role, polling interval, rate limit, the URL of its terms, the date those terms were reviewed, whether body fetching is permitted, and its retention settings (ADR-010). A source is not enabled until this is filled in. Catalogue changes require owner review.
 
 ### Collection

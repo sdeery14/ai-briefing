@@ -20,16 +20,18 @@ The Home System's own notes record that exporting traces inline blocked its even
 
 ### Model provider
 
-1. One provider. The interface is defined per task, for example `assess(story_packet) -> Assessment`, not as a generic chat abstraction.
-2. The provider's schema-constrained output is used, validated with Pydantic, with one bounded retry. The raw response is stored.
-3. Two tiers: an inexpensive model for screening, standard assessment, the baseline digest and the concept note; a capable model for escalated assessments.
-4. Model identifiers, the price table and budgets are in `config/models.yaml`, a protected file.
-5. No routing library and no second provider until a concrete need exists.
+1. One provider: Anthropic, through the Claude API and its official Python SDK. The interface is defined per task, for example `assess(story_packet) -> Assessment`, not as a generic chat abstraction.
+2. Two tiers: `claude-haiku-5-5` for screening, standard assessment, the baseline digest and the concept note; `claude-sonnet-5-5` for escalated assessments. Identifiers, capabilities and prices were checked against Anthropic's documentation on 2026-11-21 and are recorded in RFC §7.1.
+3. Structured output uses the API's schema-constrained format, validated with Pydantic, with one bounded retry. The raw response is stored. Because the API does not enforce numeric ranges or string lengths, scores are enumerated values and lengths are checked in code.
+4. Effort is set explicitly per task. Sampling parameters are not used; these models reject non-default values, so output variability is measured, not suppressed.
+5. A `refusal` stop reason is recorded as an outcome of the call. The story stays unassessed and the run continues.
+6. Model identifiers, the price table and budgets are in `config/models.yaml`, a protected file. Changing a model or a price is an owner-reviewed change.
+7. No routing library and no second provider until a concrete need exists.
 
 ### Cost control
 
 1. A provisional budget of $15 per calendar month, enforced in the `llm` module.
-2. Before each call, the maximum possible cost is estimated. A call that would exceed the remaining monthly budget or the day's allowance is refused and the refusal recorded.
+2. Before each call, the maximum possible cost is estimated from the input size, the output limit (thinking is billed as output) and the price table, including the higher `claude-haiku-5-5` rate for prompts over 100,000 tokens. A call that would exceed the remaining monthly budget or the day's allowance is refused and the refusal recorded.
 3. Actual usage is recorded after each call.
 4. Shedding order and degraded behaviour are defined in RFC §7.
 
@@ -55,6 +57,8 @@ The Home System's own notes record that exporting traces inline blocked its even
 | Langfuse, self-hosted | Requires ClickHouse, Redis, blob storage and PostgreSQL, with documented memory minimums well beyond this host |
 | Langfuse Cloud or LangSmith | An external account and data leaving the host, for no capability needed yet. LangSmith self-hosting is limited to its Enterprise plan. |
 | A backend-portability layer | The no-op protocol already keeps the backend replaceable |
+| The API's built-in citations instead of quote checking in code | Returns exact cited spans, but per Anthropic's API reference it cannot be combined with schema-constrained output, which the assessment depends on. Revisit if that changes. |
+| The Batch API for screening | Halves the price but is asynchronous; a later cost lever, not needed in M1 |
 
 ## Consequences
 

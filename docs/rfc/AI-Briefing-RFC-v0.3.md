@@ -1,7 +1,7 @@
 # AI Briefing — RFC v0.3
 
 **Status:** Proposed. Not accepted; implementation has not been authorised.
-**Date:** 2026-11-19
+**Date:** 2026-11-19; revised 2026-11-21 (model provider, source catalogue draft, M1 sequence)
 **Supersedes:** RFC v0.1 (architecture packet v0.2)
 **Licence:** Apache-2.0
 **Repository:** `sdeery14/ai-briefing` (public)
@@ -326,18 +326,64 @@ Selection is deterministic. Eligible stories are ordered by class, then by a doc
 
 ## 7. Models, cost and degradation
 
-One provider (ADR-009). Model identifiers and the price table live in `config/models.yaml`, which is a protected path.
+One provider: **Anthropic**, through the Claude API (ADR-009). Model identifiers and the price table live in `config/models.yaml`, which is a protected path.
 
-| Tier | Used for |
-|---|---|
-| Inexpensive | Screening, standard assessment, baseline digest, concept note |
-| Capable | Escalated assessment of stories that may be `major` or have high uncertainty |
+| Tier | Model ID | Used for |
+|---|---|---|
+| Inexpensive | `claude-haiku-5-5` | Screening, standard assessment, baseline digest, concept note |
+| Capable | `claude-sonnet-5-5` | Escalated assessment of stories that may be `major` or have high uncertainty |
 
-**Budget.** A provisional cap of **$15 per calendar month**, enforced by the application. It will be revised once real volume and cost have been measured in M1.
+### 7.1 Verified model facts
+
+Checked against Anthropic's models overview and pricing pages on 2026-11-21. Prices are US dollars per million tokens on the first-party API.
+
+| | `claude-haiku-5-5` | `claude-sonnet-5-5` |
+|---|---|---|
+| Input | $0.10 (prompts up to 100,000 tokens); $0.50 above | $2.00 |
+| Output | $0.50 (prompts up to 100,000 tokens); $2.50 above | $10.00 |
+| Cache read | $0.01; $0.05 above the threshold | $0.10 |
+| Cache write, 5 minutes | $0.125; $0.625 above the threshold | $2.50 |
+| Batch API (50% discount) | $0.05 in, $0.25 out; $0.25 and $1.25 above the threshold | $1.00 in, $5.00 out |
+| Context window, maximum output | 1M tokens, 128K tokens | 1M tokens, 128K tokens |
+| Default effort | `medium` | `high` |
+| Structured output (`output_config.format`) | Supported | Supported |
+| Earliest retirement | 7 October 2027 | 28 September 2027 |
+| Reliable knowledge cutoff | June 2026 | June 2026 |
+
+Both identifiers are pinned snapshots, not moving aliases.
+
+Consequences for the design:
+
+- **Keep inexpensive-model prompts under 100,000 tokens.** A request over the threshold is billed at five times the rate for the whole request. Screening is batched to stay under it, and the pre-call cost estimate applies the higher rate if a prompt would cross it.
+- **Thinking is billed as output.** Both models think adaptively. The pre-call estimate therefore uses the request's output limit, and effort is set explicitly per task (low for screening) instead of relying on defaults.
+- **Sampling cannot be pinned.** Non-default `temperature`, `top_p` and `top_k` are rejected on these models, so identical inputs can give different outputs. This is why run-to-run variability is measured (ADR-007) and why raw responses are stored.
+- **Scores are enumerations.** Structured output does not enforce numeric ranges or string lengths. The 0–4 scores are declared as enumerated values, and length limits are validated in code after the response.
+- **Refusals are a normal outcome.** A response can end with a `refusal` stop reason, for example on some security content. The call is recorded as refused and the story stays unassessed; the run continues.
+- **No forced tool choice.** `claude-sonnet-5-5` rejects it. The design does not use tools, so this costs nothing.
+- **Hindsight.** Both models' knowledge ends in June 2026. News collected from now on post-dates it, which is what makes prospective evaluation clean.
+
+Two cost levers are available and not used in M1: the Batch API, which halves the price but is asynchronous, and prompt caching for the stable rubric prefix.
+
+### 7.2 Budget
+
+A provisional cap of **$15 per calendar month**, enforced by the application. It will be revised once real volume and cost have been measured in M1.
+
+The prices above are verified. Volumes are not. As an illustration only, with assumed volumes:
+
+| Stage | Assumed daily volume | Approximate daily cost |
+|---|---|---|
+| Screening (inexpensive) | 1,000 items at 400 input and 60 output tokens each | $0.07 |
+| Standard assessment (inexpensive) | 40 stories at 5,000 input and 2,000 output tokens each | $0.06 |
+| Escalation (capable, from M3) | 5 stories at 8,000 input and 3,000 output tokens each | $0.23 |
+| Baseline digest and concept note | Two calls | Under $0.02 |
+
+That is roughly $0.38 a day, about $11 a month, with escalation the largest share. Whether the assumptions hold is the first thing M1 measures.
 
 - Before every call, the client estimates the maximum cost from the input size, the output limit and the price table. If that would exceed the remaining monthly budget or the day's allowance, the call is not made and the refusal is recorded.
 - Actual usage from the provider's response is recorded after each call.
 - A spending limit set at the provider is recommended as a second, independent control.
+
+### 7.3 Shedding and degraded behaviour
 
 **Priority when the budget is tight.** Calls are shed in this order: experimental judges, baseline digest, escalation, concept note, standard assessment (lowest-relevance stories first), screening.
 
@@ -534,9 +580,9 @@ Full plan and issue breakdown: [`docs/planning/milestones.md`](../planning/miles
 
 | Milestone | Delivers | Observable exit |
 |---|---|---|
-| **M0** Decisions and safeguards | Accepted RFC and ADRs, repository protections, source catalogue, provider key and price table | A test pull request is blocked from merging without owner action |
-| **M1** Working briefing | Daily briefing and baseline digest from real sources on the development machine | Fourteen consecutive daily briefings; a recorded blind preference for each |
-| **M2** Delivery | Pi deployment, morning email section, feedback path, backup and restore | The email carries the briefing on healthy days and is unchanged on a forced failure; a feedback action reaches the database; a restore succeeds |
+| **M0** Safeguards | Licence, agent instructions, repository protections, CI, `/round` without merge, model and source configuration | A test pull request is blocked from merging without owner action |
+| **M1** Working briefing | The first real briefing after six issues; then daily runs, the baseline digest and hardening | Build criteria pass; fourteen consecutive daily briefings each with a recorded blind preference; an exit report |
+| **M2** Delivery | Pi deployment, morning email section, feedback path, backup and restore. Preparation may overlap the M1 comparison; deployment needs the owner's authorisation after the M1 and safeguard gates pass. | The email carries the briefing on healthy days and is unchanged on a forced failure; a feedback action reaches the database; a restore succeeds |
 | **M3** Trust | Topic-based story grouping, source roles and corroboration, full policy, escalation, reassessment and repetition rules | A scripted day with a duplicate, a real update and a vendor-only claim is handled as specified; no integrity violation reaches a briefing |
 | **M4** Evaluation | Weekly labelling routine, recall analysis, later revisits, variability measurement, experimental judges | A baseline report with sample sizes and intervals; one prompt change compared against it |
 | **M5** Coverage | Sources, search or research justified by M4 findings | A measured improvement beyond the noise band |
@@ -546,6 +592,6 @@ Full plan and issue breakdown: [`docs/planning/milestones.md`](../planning/miles
 
 ## 13. Open questions
 
-Only genuinely unresolved items remain, each with a recommended default, in [`docs/reviews/v0.3-open-questions.md`](../reviews/v0.3-open-questions.md). Two must be answered before M1 (model provider and identifiers; the initial source list). The rest gate M2 or later.
+Only genuinely unresolved items remain, each with a recommended default, in [`docs/reviews/v0.3-open-questions.md`](../reviews/v0.3-open-questions.md). The model provider is decided (§7). The initial source list is drafted in [`docs/planning/source-catalogue-draft.md`](../planning/source-catalogue-draft.md) and awaits the owner's editorial approval before any collection. Four questions about deployment remain explicitly open and gate M2: storage, backup destination, email placement and feedback authentication.
 
 Nothing in this document authorises implementation. Work begins when the owner accepts the RFC and the ADRs.
