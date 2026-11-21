@@ -389,6 +389,28 @@ def test_the_workflow_contains_no_merge_or_bypass_command(relative: str) -> None
         assert not re.search(pattern, text), f"{relative} contains {pattern!r}"
 
 
+def test_the_skill_works_from_the_json_plan_that_carries_the_issue_text() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    commands = re.findall(r"`(uv run python scripts/round_plan\.py[^`]*)`", text)
+    assert commands
+    assert all("--json" in command for command in commands)
+    plan = fixture_plan()
+    assert "Done when" in entry(plan, 101)["instructions"]
+    assert entry(plan, 103)["owner_comments"] == ["Use Alembic batch mode, as ADR-002 says."]
+    # The overview is for people and must not be mistaken for the full scope.
+    assert "Alembic batch mode" not in round_plan.render(plan)
+
+
+def test_the_dry_run_comes_before_any_step_that_changes_something() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    dry_run = text.index("## Dry run")
+    for mutating in ("git pull", "gh label create", "## Before the first issue", "## Per issue"):
+        assert dry_run < text.index(mutating), mutating
+    section = text[dry_run : text.index("## Before the first issue")]
+    assert "It only reads" in section
+    assert "gh label create" not in section
+
+
 def test_the_skill_states_that_it_never_merges() -> None:
     text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
     assert "Never merge a pull request" in text
@@ -592,6 +614,32 @@ def test_a_notice_from_before_the_push_is_ignored() -> None:
         "created_at": "2026-11-21T09:00:00Z",
     }
     assert snap(comments=[notice])["codex"] is None
+
+
+def test_an_error_state_for_an_earlier_commit_is_stale_and_keeps_waiting() -> None:
+    result = snap(comments=[codex_comment(OLD, status="error")])
+    assert result["codex"]["status"] == "error"
+    assert result["codex"]["stale"] is True
+    assert not pr_wait.reviewer_error(result["codex"])
+    assert not pr_wait.settled(result)
+    decision = decide(result)
+    assert decision["action"] == "wait"
+    assert decision["outcome"] is None
+
+
+def test_an_error_state_for_the_head_commit_stops_the_wait() -> None:
+    result = snap(comments=[codex_comment(HEAD, status="error")])
+    assert pr_wait.reviewer_error(result["codex"])
+    assert pr_wait.settled(result)
+    assert decide(result)["outcome"] == "needs-human"
+
+
+def test_a_stale_error_that_times_out_goes_to_the_owner() -> None:
+    result = snap(comments=[codex_comment(OLD, status="error")])
+    result["timeout"] = True
+    decision = decide(result)
+    assert decision["outcome"] == "needs-human"
+    assert "not for the current head commit" in decision["reasons"][0]
 
 
 def test_a_review_with_unresolved_findings_is_reported() -> None:

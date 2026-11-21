@@ -233,15 +233,25 @@ def snapshot(gh: Gh, config: Config, number: int) -> dict[str, Any]:
     }
 
 
+def reviewer_error(codex: dict[str, Any] | None) -> bool:
+    """True when the reviewer reported a problem that applies to the current head.
+
+    An error state that names an earlier commit is stale: a review of the new head has
+    been requested and may still arrive, so it is not a reason to stop. A notice with no
+    commit at all is only kept when it is newer than the push, so it does apply.
+    """
+    return codex is not None and codex.get("status") == "error" and not codex.get("stale")
+
+
 def settled(snap: dict[str, Any]) -> bool:
     """True when waiting longer will not change what the round should do next."""
     if snap["state"] != "OPEN" or snap["problems"]:
         return True
     if snap["ci"] == "fail":
         return True
-    codex = snap["codex"]
-    if codex is not None and codex["status"] == "error":
+    if reviewer_error(snap["codex"]):
         return True
+    codex = snap["codex"]
     reviewed = codex is not None and codex["for_head"] and codex["status"] == "completed"
     return snap["ci"] == "pass" and reviewed
 

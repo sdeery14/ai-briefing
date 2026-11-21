@@ -135,8 +135,9 @@ def decide(
         result["notes"].append("branch is behind the default branch; update before merging")
 
     codex = snap.get("codex")
-    if codex is not None and codex.get("status") == "error":
-        return needs_human(f"the reviewer reported a problem: {codex.get('message')}")
+    if pr_wait.reviewer_error(codex):
+        message = codex.get("message") if codex else None
+        return needs_human(f"the reviewer reported a problem: {message}")
 
     unanswered = [t for t in threads if not t.get("answered")]
     disputed = [t for t in threads if t.get("answered")]
