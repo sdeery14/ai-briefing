@@ -41,7 +41,6 @@ from typing import Any
 
 import review_threads
 from round_lib import (
-    ESCALATE,
     PR_QUERY,
     Config,
     Gh,
@@ -211,11 +210,9 @@ def snapshot(gh: Gh, config: Config, number: int) -> dict[str, Any]:
     comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
     codex = codex_state(comments, config, head, head_arrived_at(gh, config, head))
     # A P0 from the reviewer or an allowed author must not wait for CI to finish.
-    critical = [
-        str(t.get("url") or t["id"])
-        for t in review_threads.unresolved_threads(gh, config, number)
-        if t["severity"] == ESCALATE and (t["from_reviewer"] or t["from_allowed_author"])
-    ]
+    critical = review_threads.critical_findings(
+        review_threads.unresolved_threads(gh, config, number)
+    )
     return {
         "pr": number,
         "head": head,
@@ -315,9 +312,20 @@ def main(argv: list[str] | None = None) -> int:
             "pr": args.number,
             "error": f"{type(error).__name__}: {str(error)[:300]}",
             "ci": "error",
+            "p0_findings": None,
+            "p0_unknown": True,
             "automatic_merge": False,
             "merge": "owner-only",
         }
+        # Whatever else went wrong, say whether a P0 is open if that can still be read.
+        try:
+            threads = review_threads.unresolved_threads(
+                with_retries(run_gh), load_config(), args.number
+            )
+            snap["p0_findings"] = review_threads.critical_findings(threads)
+            snap["p0_unknown"] = False
+        except (GhError, ValueError, KeyError, TypeError):
+            pass
         code = 3
     sys.stdout.write(json.dumps(snap) + "\n")
     return code

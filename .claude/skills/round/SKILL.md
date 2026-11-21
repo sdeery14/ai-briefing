@@ -102,13 +102,16 @@ leaves out the issue text and the owner's comments, so do not work from it.
 5. **Wait:** `uv run python scripts/pr_wait.py <pr>`. It returns one JSON line when the
    required checks have finished and Codex has a completed review of the head commit.
    Exit code 2 means it timed out; 3 means GitHub could not be read or the configuration
-   disagrees with the ruleset.
+   disagrees with the ruleset. **Whatever the exit code, go to step 6.** Do not decide
+   anything from the wait's output yourself.
 6. **Decide:** `uv run python scripts/round_outcome.py status <pr>` (add `--timed-out`
-   after a timeout). Do what its `action` says:
+   after a timeout). **If `stop_round` is true, the round ends now**, whatever else the
+   result says: do the `escalate` row and work no further issue. Otherwise do what its
+   `action` says:
 
    | `action` | What to do |
    |---|---|
-   | `escalate` | **A P0 finding. Stop the whole round now.** Do not attempt a fix, do not push, do not rewrite history. Label the pull request `needs-human`, tell the owner what was found and what is at risk without repeating any secret, and end the round. |
+   | `escalate` | **A P0 finding, or the review threads could not be read so one cannot be ruled out. Stop the whole round now.** This comes before every other condition: a failing check, a ruleset mismatch, a timeout or a spent fix budget does not change it. Do not attempt a fix, do not push, do not rewrite history. Label the pull request `needs-human`, tell the owner what was found and what is at risk without repeating any secret, and end the round. |
    | `wait` | Run `pr_wait.py` again. |
    | `fix` | Start a fix round (below). |
    | `resolve-conflicts` | `git fetch origin && git merge origin/main`, resolve, run the local checks, push. Never force-push. Comment `@codex review`. Not a fix round. Wait again. |
@@ -116,9 +119,10 @@ leaves out the issue text and the owner's comments, so do not work from it.
    | `none` | The pull request is closed. Go to the next issue. |
 
 7. **A fix round:**
-   1. `uv run python scripts/round_outcome.py record-fix-round <pr>`. If it refuses, the
-      limit is used up: label `needs-human`, summarise what was fixed and what remains, and
-      go to the next issue.
+   1. `uv run python scripts/round_outcome.py record-fix-round <pr>`. If it refuses because
+      a P0 finding is open, do the `escalate` row and end the round. If it refuses because
+      the limit is used up: label `needs-human`, summarise what was fixed and what remains,
+      and go to the next issue.
    2. For a failed check, read the log (`gh run view <run> --log-failed`) and fix the cause.
    3. For review findings, `uv run python scripts/review_threads.py list <pr>`.
       Fix every P1 and P2. Fix a P3 when it is small; otherwise reply with the reason.

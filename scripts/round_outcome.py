@@ -7,12 +7,17 @@ Used by the ``/round`` skill (``.claude/skills/round/SKILL.md``).
 
 ``status`` reads the pull request once and prints one JSON object. Its ``action`` is one of:
 
-- ``escalate``  A P0 finding. Stop the whole round and tell the owner. Do not fix it first.
+- ``escalate``  A P0 finding from the reviewer or an allowed author, or the review threads
+  could not be read so one cannot be ruled out. Stop the whole round and tell the owner.
+  Do not fix anything first. This is checked before everything else: no other problem with
+  the pull request can hide it.
 - ``wait``      Checks or the review are still running.
 - ``fix``       A required check failed or a finding is unanswered, and a fix round is left.
 - ``resolve-conflicts``  The branch conflicts with the default branch.
 - ``label``     Finished. ``outcome`` is ``ready-for-owner`` or ``needs-human``.
 - ``none``      The pull request is closed.
+
+Whenever ``stop_round`` is true the round ends, whatever the action says.
 
 There is no action that merges. ``ready-for-owner`` means the owner can review and merge;
 it is a label, not a permission. The result always carries ``"automatic_merge": false``.
@@ -35,7 +40,6 @@ import pr_wait
 import review_threads
 from round_lib import (
     COMMENT_MUTATION,
-    ESCALATE,
     PR_QUERY,
     Config,
     Gh,
@@ -54,6 +58,13 @@ MARKER = re.compile(r"<!-- round-fix-round:(\d+) -->")
 
 class LimitReached(GhError):  # noqa: N818 - reads as a statement of fact
     """The pull request has already used every fix round it is allowed."""
+
+
+class EscalationRequired(GhError):  # noqa: N818 - reads as a statement of fact
+    """A P0 finding is open. Nothing is fixed until the owner has been told."""
+
+
+READ_ERRORS = (GhError, KeyError, TypeError, ValueError)
 
 
 def fix_rounds_used(comments: list[dict[str, Any]], config: Config) -> int:
@@ -75,8 +86,13 @@ def decide(
     max_fix_rounds: int,
     labels: tuple[str, str],
     protected: list[dict[str, str]] | None = None,
+    threads_readable: bool = True,
 ) -> dict[str, Any]:
-    """The next step for a pull request. Pure: no network, no side effects."""
+    """The next step for a pull request. Pure: no network, no side effects.
+
+    A P0 from a trusted author is decided first, before the pull request's state, its
+    checks, the review state or the fix-round budget are even looked at.
+    """
     ready_label, needs_human_label = labels
     result: dict[str, Any] = {
         "pr": snap.get("pr"),
@@ -97,6 +113,23 @@ def decide(
         result["reasons"].append(reason)
         return result
 
+    critical = review_threads.critical_findings(threads)
+    critical += [str(u) for u in snap.get("p0_findings") or [] if str(u) not in critical]
+    if critical:
+        return needs_human(
+            "P0 finding: stop and escalate to the owner; do not attempt a fix "
+            f"({', '.join(critical)})",
+            stop=True,
+            action="escalate",
+        )
+    if not threads_readable or snap.get("p0_unknown"):
+        return needs_human(
+            "the review threads could not be read, so a critical finding cannot be ruled out: "
+            "stop the round and tell the owner",
+            stop=True,
+            action="escalate",
+        )
+
     if snap.get("error") or snap.get("problems"):
         detail = snap.get("error") or "; ".join(snap.get("problems") or [])
         return needs_human(f"the pull request's state could not be trusted: {detail}")
@@ -113,15 +146,6 @@ def decide(
         result["notes"].append(
             f"{len(outsiders)} unresolved thread(s) from other authors were not acted on; "
             "they still block merging until the owner deals with them"
-        )
-
-    critical = [t for t in threads if t.get("severity") == ESCALATE]
-    if critical:
-        where = ", ".join(str(t.get("url") or t.get("id")) for t in critical)
-        return needs_human(
-            f"P0 finding: stop and escalate to the owner; do not attempt a fix ({where})",
-            stop=True,
-            action="escalate",
         )
 
     if protected:
@@ -208,22 +232,44 @@ def changed_paths(gh: Gh, config: Config, number: int) -> list[str]:
 
 
 def status(gh: Gh, config: Config, number: int, *, timed_out: bool = False) -> dict[str, Any]:
-    snap = pr_wait.snapshot(gh, config, number)
+    """Read the pull request and decide. A part that cannot be read never hides a P0.
+
+    The review threads are read on their own, first. If the rest of the snapshot then
+    fails, a P0 that was read still escalates; and if the threads themselves cannot be
+    read, the round stops, because a critical finding cannot be ruled out.
+    """
+    threads: list[dict[str, Any]] = []
+    threads_readable = True
+    try:
+        threads = review_threads.unresolved_threads(gh, config, number)
+    except READ_ERRORS:
+        threads_readable = False
+    try:
+        snap = pr_wait.snapshot(gh, config, number)
+    except READ_ERRORS as error:
+        snap = {"pr": number, "error": f"{type(error).__name__}: {str(error)[:200]}"}
     if timed_out:
         snap["timeout"] = True
-    threads = review_threads.unresolved_threads(gh, config, number)
-    comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
-    protected = [
-        {"path": m.path, "category": m.category}
-        for m in merge_eligibility.evaluate(changed_paths(gh, config, number)).protected
-    ]
+    # If the count cannot be read, assume the budget is spent: no further fix round.
+    fix_rounds = config.max_fix_rounds
+    protected: list[dict[str, str]] | None = None
+    try:
+        comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
+        fix_rounds = fix_rounds_used(comments, config)
+        protected = [
+            {"path": m.path, "category": m.category}
+            for m in merge_eligibility.evaluate(changed_paths(gh, config, number)).protected
+        ]
+    except READ_ERRORS:
+        pass
     result = decide(
         snap,
         threads,
-        fix_rounds=fix_rounds_used(comments, config),
+        fix_rounds=fix_rounds,
         max_fix_rounds=config.max_fix_rounds,
         labels=(config.label_ready, config.label_needs_human),
         protected=protected,
+        threads_readable=threads_readable,
     )
     result["protected_paths"] = protected
     result["conflicts"] = snap.get("conflicts")
@@ -233,7 +279,16 @@ def status(gh: Gh, config: Config, number: int, *, timed_out: bool = False) -> d
 
 
 def record_fix_round(gh: Gh, config: Config, number: int) -> str:
-    """Record that a fix round is starting. Refuses once the limit has been used."""
+    """Record that a fix round is starting.
+
+    Refuses once the limit has been used, and refuses while a P0 finding is open: a P0 is
+    escalated, not fixed.
+    """
+    if review_threads.critical_findings(review_threads.unresolved_threads(gh, config, number)):
+        raise EscalationRequired(
+            f"pull request {number} has an open P0 finding: stop the round and escalate "
+            "to the owner; do not start a fix round"
+        )
     comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
     used = fix_rounds_used(comments, config)
     if used >= config.max_fix_rounds:
@@ -269,16 +324,20 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(record_fix_round(gh, config, args.number) + "\n")
             return 0
         result = status(gh, config, args.number, timed_out=args.timed_out)
-    except LimitReached as error:
+    except (LimitReached, EscalationRequired) as error:
         sys.stderr.write(f"refused: {error}\n")
         return 4
     except (GhError, ValueError, KeyError, TypeError) as error:
+        # Nothing could be established, so a critical finding cannot be ruled out.
         result = {
             "pr": args.number,
-            "action": "label",
+            "action": "escalate",
             "outcome": "needs-human",
-            "stop_round": False,
-            "reasons": [f"could not read the pull request: {type(error).__name__}: {error}"[:300]],
+            "stop_round": True,
+            "reasons": [
+                "could not read the pull request, so a critical finding cannot be ruled out; "
+                f"stop the round and tell the owner: {type(error).__name__}: {error}"[:400]
+            ],
             "automatic_merge": False,
             "merge": "owner-only",
         }

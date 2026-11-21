@@ -74,6 +74,16 @@ def all_threads(gh: Gh, config: Config, number: int) -> list[dict[str, Any]]:
     raise GhError("review threads did not end within 100 pages")
 
 
+def _trusted(author: object, config: Config) -> bool:
+    """The configured reviewer or an allowed author. Nobody else can raise a P0."""
+    return node_is_reviewer(author, config) or is_allowed_author(login_of(author), config)
+
+
+def critical_findings(threads: list[dict[str, Any]]) -> list[str]:
+    """Where the unresolved P0 findings from trusted authors are, given described threads."""
+    return [str(t.get("url") or t["id"]) for t in threads if t.get("p0")]
+
+
 def describe(thread: dict[str, Any], config: Config) -> dict[str, Any]:
     comments = (thread.get("comments") or {}).get("nodes") or []
     first = comments[0] if comments else {}
@@ -89,6 +99,12 @@ def describe(thread: dict[str, Any], config: Config) -> dict[str, Any]:
         "from_reviewer": node_is_reviewer(first.get("author"), config),
         "from_allowed_author": is_allowed_author(author, config),
         "severity": severity_of(body),
+        # A P0 counts wherever a trusted author raises it in the thread: as the opening
+        # finding, or as a reply that escalates someone else's thread.
+        "p0": any(
+            severity_of(str(c.get("body") or "")) == ESCALATE and _trusted(c.get("author"), config)
+            for c in comments
+        ),
         "body": body,
         "replies": len(replies),
         "answered": any(is_allowed_author(login_of(r.get("author")), config) for r in replies),
@@ -115,7 +131,7 @@ def resolve(
         raise Refused(f"{thread_id} is not an unresolved thread on pull request {number}")
     thread = matches[0]
     if not keep_open:
-        if thread["severity"] == ESCALATE:
+        if thread["p0"]:
             raise Refused("a P0 thread is escalated to the owner, not resolved here")
         if not thread["from_reviewer"]:
             raise Refused(
