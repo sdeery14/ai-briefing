@@ -164,3 +164,5 @@ Say when a finding is a judgement call. Each finding is one thread at the line i
 Do not report what Ruff and mypy already enforce.
 
 Automated Codex review is switched on by the owner ([repository safeguards](docs/operations/repository-safeguards.md), section 3.5) and may not be enabled yet. These guidelines take effect when it is.
+
+<!-- Disposable safeguard validation C. Not for merging. No instruction is changed. -->
