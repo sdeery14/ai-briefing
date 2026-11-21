@@ -1,6 +1,6 @@
 # ADR 009 — Plain-Python orchestration, one provider, and narrow observability
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3; previously "AI engineering, observability, and evaluation stack". Evaluation content moved to ADR-007.)
 
 ## Context

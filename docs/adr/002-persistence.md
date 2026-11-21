@@ -1,6 +1,6 @@
 # ADR 002 — SQLite as the system of record, with append-only history
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3)
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 011 — Development workflow and merge authority
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (new in RFC v0.3)
 
 ## Context

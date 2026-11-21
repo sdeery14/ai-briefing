@@ -1,96 +1,91 @@
-# Initial source catalogue — draft for owner approval
+# Source catalogue — approved initial selection and future options
 
-**Status:** Draft. **No source is enabled.** Nothing is collected until the owner approves each entry and its terms record is completed in `config/sources.yaml` (ADR-003, ADR-010). That file is created in M0, not in this pull request.
+**Status:** The owner approved nine sources as the **initial editorial selection** on 2026-11-21. That is approval of which sources to follow. It is **not** permission to fetch or retain content.
 
-**Checked on:** 2026-11-21. "Verified" below means a fact was observed directly that day: the feed URL returned a parseable feed, or a terms page was read. Everything else needs the owner's review.
+**No source is enabled.** Under ADR-010, each source needs its own terms record, reviewed and approved by the owner, before it is switched on in `config/sources.yaml`. That file is created in M0. A publicly reachable feed is not treated as permission to store what it serves.
 
-## How to read this
+**Checked on:** 2026-11-21. "Verified" means a fact was observed directly that day: the feed URL returned a parseable feed, or a terms page was read.
 
-- **Role** is the source role used by the editorial policy (ADR-004): vendor, primary, independent, community or aggregator.
-- **Frequency** is what the feed's recent dates showed, not a published schedule.
-- **Proposed handling** is deliberately conservative. Unless terms have been read and recorded, a source is metadata plus whatever summary or content its own feed supplies, with no separate page fetch. Feed-supplied full text is treated as a body and kept for at most 90 days.
-- Feed-supplied text is enough for M1. Most of these feeds carry a summary, abstract or release notes, which is what the assessor and the citation-integrity check work from.
+## Approved initial selection
 
-## Core proposal (15 sources)
+| # | Source | Purpose | Type and URL | Role | Terms status |
+|---|---|---|---|---|---|
+| 1 | OpenAI News | Model, API and product announcements | RSS: `https://openai.com/news/rss.xml` | Vendor | Not reviewed. Owner review required. |
+| 2 | Google DeepMind blog | Research and model announcements | RSS: `https://deepmind.google/blog/rss.xml` | Vendor | Not reviewed. Owner review required. |
+| 3 | Google Research blog | Research write-ups | RSS: `https://research.google/blog/rss/` | Vendor | Not reviewed. Owner review required. |
+| 4 | Hugging Face blog | Open-model releases, tooling, tutorials | RSS: `https://huggingface.co/blog/feed.xml` | Vendor | Not reviewed. Owner review required. |
+| 5 | arXiv, `cs.CL` only | New papers in computation and language | RSS: `https://rss.arxiv.org/rss/cs.CL` | Primary | **API terms read 2026-11-21** (summary below). Owner approval of the record still required. |
+| 6 | MLflow releases | Tracking, tracing and evaluation tooling | Atom: `https://github.com/mlflow/mlflow/releases.atom` | Vendor | Not reviewed (GitHub terms; the project's licence for release notes). Owner review required. |
+| 7 | Simon Willison's Weblog | Hands-on analysis of models and tools | Atom: `https://simonwillison.net/atom/everything/` | Independent | Not reviewed. Owner review required. |
+| 8 | Hacker News | Attention signal and discovery of items outside the catalogue | Official API, base `https://hacker-news.firebaseio.com/v0/` | Community | **API README read 2026-11-21.** It states no terms for the data. Owner review required. |
+| 9 | Anthropic SDK releases | Partial stand-in for Anthropic announcements | Atom: `https://github.com/anthropics/anthropic-sdk-python/releases.atom` | Vendor | Not reviewed (GitHub terms; the project's licence for release notes). Owner review required. |
 
-### Model providers and platforms
+All nine feed or API URLs were live on 2026-11-21. The arXiv URL shown is the single-category form of the address that was tested; the `cs.CL` feed itself answered that day but was empty because it was a Saturday.
 
-| # | Source | Purpose | Type and URL | Role | Frequency | Verified | Needs owner review |
-|---|---|---|---|---|---|---|---|
-| 1 | OpenAI News | Model, API and product announcements | RSS: `https://openai.com/news/rss.xml` | Vendor | Several a week; latest item 20 Nov 2026 | Feed live | Site terms. The feed mixes company news with technical releases, so screening must filter. |
-| 2 | Google DeepMind blog | Research and model announcements | RSS: `https://deepmind.google/blog/rss.xml` | Vendor | A few a week; latest 18 Nov 2026 | Feed live | Site terms |
-| 3 | Google Research blog | Research write-ups | RSS: `https://research.google/blog/rss/` | Vendor | A few a week; latest 20 Nov 2026 | Feed live | Site terms |
-| 4 | Hugging Face blog | Open-model releases, tooling, tutorials | RSS: `https://huggingface.co/blog/feed.xml` | Vendor | Near daily; latest 20 Nov 2026 | Feed live | Site terms. High volume and mixed depth; may include community posts. |
-| 5 | Anthropic SDK releases | Proxy for Anthropic API changes (see note A) | Atom: `https://github.com/anthropics/anthropic-sdk-python/releases.atom` | Vendor | Several a week; latest 20 Nov 2026 | Feed live | GitHub terms; whether this is an acceptable stand-in |
+### What has actually been reviewed
 
-### Research
+| Source | What was read | What it says |
+|---|---|---|
+| arXiv | Terms of Use for arXiv APIs | Descriptive metadata, which the terms define as including title, abstract, authors, identifiers and classification, is offered under CC0. At most one request every three seconds, on a single connection, across all machines under one's control. Do not store and serve e-print content (PDFs, source) from one's own servers. Do not present the project as endorsed by arXiv. |
+| Hacker News | The official API README | No authentication. "There is currently no rate limit." The README gives no terms for use of the data. |
+| The other seven | Nothing | Terms, permitted storage and retention are unknown. |
 
-| # | Source | Purpose | Type and URL | Role | Frequency | Verified | Needs owner review |
-|---|---|---|---|---|---|---|---|
-| 6 | arXiv: cs.LG, cs.CL, cs.AI | New ML and AI papers | RSS: `https://rss.arxiv.org/rss/cs.LG+cs.CL+cs.AI` | Primary | Daily at midnight US Eastern; a single fetch of cs.LG alone returned 359 items | Feed live. Terms read: descriptive metadata, including abstracts, is CC0; at most one request every three seconds on one connection; do not store and serve e-print content. | Which categories. This is by far the largest source and the main driver of screening volume. |
+No permission has been assumed for any source. Where terms are unclear after review, the source stays metadata-only (ADR-010).
 
-### Engineering tools and frameworks
+### Handling until a terms record is approved
 
-| # | Source | Purpose | Type and URL | Role | Frequency | Verified | Needs owner review |
-|---|---|---|---|---|---|---|---|
-| 7 | PyTorch releases | Core framework changes | Atom: `https://github.com/pytorch/pytorch/releases.atom` | Vendor | Feed showed entries dated 21 Nov 2026 | Feed live | GitHub terms; whether pre-release tags should be filtered |
-| 8 | Transformers releases | Model library changes | Atom: `https://github.com/huggingface/transformers/releases.atom` | Vendor | Weekly or more; latest 21 Nov 2026 | Feed live | GitHub terms |
-| 9 | vLLM releases | Inference serving | Atom: `https://github.com/vllm-project/vllm/releases.atom` | Vendor | Weekly; latest 18 Nov 2026 | Feed live | GitHub terms |
-| 10 | MLflow releases | Tracking, tracing and evaluation tooling | Atom: `https://github.com/mlflow/mlflow/releases.atom` | Vendor | Weekly or more; latest 21 Nov 2026 | Feed live | GitHub terms |
+- The source stays disabled. Nothing is collected from it.
+- When enabled, the default is metadata plus whatever summary or content the source's own feed supplies, with no separate page fetch. Feed-supplied full text is treated as a body and kept for at most 90 days.
+- Hacker News items are metadata only: title, link, score and comment count. Linked pages on hosts outside the catalogue are not fetched (open question Q6).
 
-Which repositories to follow is an editorial choice. These four match tools the owner is known to use; swap freely.
+### Terms record to complete for each source
 
-### Engineering analysis
+Terms URL; date reviewed; whether storing the feed's summary or content is permitted; whether a separate body fetch is permitted; retention in days; excerpt limit; rate limit; attribution or other restrictions.
 
-| # | Source | Purpose | Type and URL | Role | Frequency | Verified | Needs owner review |
-|---|---|---|---|---|---|---|---|
-| 11 | Simon Willison's Weblog | Hands-on analysis of models and tools | Atom: `https://simonwillison.net/atom/everything/` | Independent | Many items a day (includes short link posts) | Feed live | Site terms; whether a narrower feed exists that carries only full posts |
-| 12 | Import AI | Weekly research and policy digest with commentary | RSS: `https://importai.substack.com/feed` | Independent (also aggregates; see note B) | Weekly, Mondays | Feed live; carries full text and a copyright element | Substack and author terms; full-text retention |
-| 13 | Ahead of AI | Long-form explanations of research and techniques | RSS: `https://magazine.sebastianraschka.com/feed` | Independent | About monthly; latest 15 Nov 2026 | Feed live; carries full text and a copyright element | Substack and author terms; whether some posts are subscriber-only |
-| 14 | Lil'Log | Deep technical surveys | RSS: `https://lilianweng.github.io/index.xml` | Independent | Infrequent; latest 4 Jul 2026 | Feed live | Site terms |
+### Known limitations of this selection
 
-### Community discovery
+**Anthropic coverage is partial.** Anthropic has no announcement feed that was found (two conventional feed paths returned 404), and M1 reads only RSS, Atom and the Hacker News API. SDK releases show API changes, not model or policy announcements. Major Anthropic news will usually also arrive through Hacker News or independent commentary, where the editorial policy caps it at `watch`. This is accepted for now. No custom scraper is built. Discovery is revisited in M5 on evidence of stories that were actually missed.
 
-| # | Source | Purpose | Type and URL | Role | Frequency | Verified | Needs owner review |
-|---|---|---|---|---|---|---|---|
-| 15 | Hacker News | Attention signal and discovery of items outside the catalogue | Official API, base `https://hacker-news.firebaseio.com/v0/` (`topstories`, `beststories`, `item/<id>.json`) | Community | Continuous | API live, no authentication. The official README says "There is currently no rate limit." | The README states no terms for the data. Score threshold and polling interval. |
+**arXiv is limited to `cs.CL`.** This is to control volume. A single fetch of `cs.LG` alone returned 359 items; `cs.CL` volume was not measured, because the feed was empty on the day of the check. Further categories can be enabled after M1 measures collection volume and relevance.
 
-Hacker News items are metadata only: title, link, score and comment count. Linked pages on hosts outside the catalogue are not fetched (open question Q6).
+**Mixed feeds.** OpenAI News and the Hugging Face blog mix technical releases with company and community posts, and Simon Willison's feed includes many short link posts each day. Screening has to filter these. Whether a narrower feed exists for the last one was not checked.
 
-## Optional additions
+**Volume and price threshold.** Each screening request should stay under 100,000 input tokens, because the inexpensive model's price is five times higher above that threshold (RFC §7).
 
-| Source | Purpose | Type and URL | Role | Frequency | Verified | Why optional |
-|---|---|---|---|---|---|---|
-| Mistral AI news | Model and platform announcements | RSS: `https://mistral.ai/news/rss` | Vendor | About weekly; latest 5 Nov 2026 | Feed live (served as plain text) | Adds a provider; lower volume |
-| BAIR blog | Academic research write-ups | RSS: `https://bair.berkeley.edu/blog/feed.xml` | Primary | Infrequent; latest 9 Nov 2026 | Feed live | Low volume |
-| Eugene Yan | Applied ML and LLM engineering patterns | RSS: `https://eugeneyan.com/rss/` | Independent | Infrequent; latest 19 Nov 2026 | Feed live | Low volume |
+## Future options
+
+Not part of the initial selection. Kept here so they can be added later through an owner-reviewed catalogue change. Feed URLs were live on 2026-11-21; no terms were reviewed.
+
+| Source | Purpose | Type and URL | Role | Observed frequency |
+|---|---|---|---|---|
+| arXiv `cs.LG`, `cs.AI` | Wider research coverage | RSS: `https://rss.arxiv.org/rss/cs.LG+cs.CL+cs.AI` (combined form) | Primary | Daily; high volume |
+| PyTorch releases | Core framework changes | Atom: `https://github.com/pytorch/pytorch/releases.atom` | Vendor | Frequent; may include pre-release tags |
+| Transformers releases | Model library changes | Atom: `https://github.com/huggingface/transformers/releases.atom` | Vendor | Weekly or more |
+| vLLM releases | Inference serving | Atom: `https://github.com/vllm-project/vllm/releases.atom` | Vendor | Weekly |
+| Import AI | Weekly research and policy digest | RSS: `https://importai.substack.com/feed` | Independent; also aggregates | Weekly. Full text in feed. |
+| Ahead of AI | Long-form explanations of research | RSS: `https://magazine.sebastianraschka.com/feed` | Independent | About monthly. Full text in feed. |
+| Lil'Log | Deep technical surveys | RSS: `https://lilianweng.github.io/index.xml` | Independent | Infrequent |
+| Mistral AI news | Model and platform announcements | RSS: `https://mistral.ai/news/rss` | Vendor | About weekly |
+| BAIR blog | Academic research write-ups | RSS: `https://bair.berkeley.edu/blog/feed.xml` | Primary | Infrequent |
+| Eugene Yan | Applied ML and LLM engineering patterns | RSS: `https://eugeneyan.com/rss/` | Independent | Infrequent |
+
+A digest such as Import AI reports on other people's work. If it is added, corroboration should count the underlying source, not the digest.
 
 ## Considered and not proposed
 
 | Source | Reason |
 |---|---|
-| Anthropic news site | No feed found; two conventional feed paths returned 404 (note A) |
-| Meta AI blog | No feed found at the conventional path (404) |
-| Google "The Keyword" AI section | Feed is live, but it is largely product marketing and overlaps sources 2 and 3 |
-| Microsoft Research blog | Feed is live; broad research scope beyond AI engineering |
-| Latent Space | Feed is live; daily commentary at high volume |
-| The Gradient | Feed is live; three posts since late 2024 |
-| Chip Huyen's blog | Feed is live; no post since January 2025 |
+| Anthropic news site | No feed found |
+| Meta AI blog | No feed found at the conventional path |
+| Google "The Keyword" AI section | Largely product marketing; overlaps the DeepMind and Research blogs |
+| Microsoft Research blog | Broad research scope beyond AI engineering |
+| Latent Space | Daily commentary at high volume |
+| The Gradient | Three posts since late 2024 |
+| Chip Huyen's blog | No post since January 2025 |
 | Reddit, X | Deferred by decision (ADR-003) |
 
-## Notes
+## Next steps
 
-**A. Anthropic coverage.** The chosen model provider has no announcement feed that I could find, and M1 reads only RSS, Atom and the Hacker News API. Source 5 is a partial stand-in. Major Anthropic announcements will usually also arrive through Hacker News and Import AI, but as community or secondary coverage they are capped at `watch` by the editorial policy. Options for the owner: accept this until M5, or add a small page-based adapter for provider announcement pages as a separate, reviewed decision.
-
-**B. Digests and corroboration.** Import AI reports on other people's work. When it covers a paper or release, corroboration should count the underlying source, not the digest. Until source-role rules are complete in M3, treat it as independent commentary and do not let it alone raise a story above `watch`.
-
-**C. Volume.** arXiv dominates. One category returned 359 items in a single fetch; the three together will be higher. This sets the size of the screening step and is the first thing M1 measures. Each screening request should stay under 100,000 input tokens, because the inexpensive model's price is five times higher above that threshold (RFC §7).
-
-**D. Terms.** Only arXiv's API terms and the Hacker News API README were read. For every other source the terms record is empty and must be completed by the owner before the source is enabled. Where terms are unclear the source stays metadata-only (ADR-010).
-
-## What the owner is asked to do
-
-1. Strike, swap or add sources. The list is an editorial choice.
-2. For each source kept, read its terms and fill in the record: terms URL, date reviewed, whether body or full-text storage is permitted, retention, excerpt limit.
-3. Decide the Anthropic coverage question in note A.
-4. Approve. The approved list becomes `config/sources.yaml` in M0, with every source disabled until its record is complete.
+1. Owner: review the terms of each of the nine sources and complete its record. arXiv is the furthest along.
+2. M0: the approved selection becomes `config/sources.yaml`, every entry disabled.
+3. A source is enabled, one at a time, by an owner-reviewed change once its record is complete. M1 can produce its first briefing with any subset that has been enabled.

@@ -1,6 +1,6 @@
 # ADR 005 — Education: a concept note in V1, a persistent curriculum in M6
 
-**Status:** Proposed. The V1 part applies from M1. The curriculum part is a planned design, to be confirmed before M6.
+**Status:** Accepted (owner, 2026-11-21). The accepted decision is a concept note in V1 and deferral of the persistent curriculum to M6. The M6 design in this record is re-reviewed before it is built.
 **Date:** 2026-11-19 (revised for RFC v0.3)
 
 ## Context

@@ -1,12 +1,12 @@
 # AI Briefing — RFC v0.3
 
-**Status:** Proposed. Not accepted; implementation has not been authorised.
+**Status:** Approved by the owner on 2026-11-21. Implementation has not started; it begins with M0 when the owner authorises development.
 **Date:** 2026-11-19; revised 2026-11-21 (model provider, source catalogue draft, M1 sequence)
 **Supersedes:** RFC v0.1 (architecture packet v0.2)
 **Licence:** Apache-2.0
 **Repository:** `sdeery14/ai-briefing` (public)
 **Initial deployment:** `homenvr`, the Home System Raspberry Pi 4B (8 GB)
-**Decision records:** [ADRs 001–011](../adr/README.md), all Proposed
+**Decision records:** [ADRs 001–011](../adr/README.md), all Accepted on 2026-11-21
 **Plan:** [`docs/planning/milestones.md`](../planning/milestones.md)
 **Review trail:** [`docs/reviews/`](../reviews/), in particular [`v0.3-reconciliation.md`](../reviews/v0.3-reconciliation.md) and [`v0.3-open-questions.md`](../reviews/v0.3-open-questions.md)
 
@@ -592,6 +592,6 @@ Full plan and issue breakdown: [`docs/planning/milestones.md`](../planning/miles
 
 ## 13. Open questions
 
-Only genuinely unresolved items remain, each with a recommended default, in [`docs/reviews/v0.3-open-questions.md`](../reviews/v0.3-open-questions.md). The model provider is decided (§7). The initial source list is drafted in [`docs/planning/source-catalogue-draft.md`](../planning/source-catalogue-draft.md) and awaits the owner's editorial approval before any collection. Four questions about deployment remain explicitly open and gate M2: storage, backup destination, email placement and feedback authentication.
+Only genuinely unresolved items remain, each with a recommended default, in [`docs/reviews/v0.3-open-questions.md`](../reviews/v0.3-open-questions.md). The model provider is decided (§7). The initial editorial selection of nine sources is approved and listed in [`docs/planning/source-catalogue-draft.md`](../planning/source-catalogue-draft.md); each source still needs its terms record approved before it is enabled (ADR-010). Four questions about deployment remain explicitly open and gate M2: storage, backup destination, email placement and feedback authentication.
 
-Nothing in this document authorises implementation. Work begins when the owner accepts the RFC and the ADRs.
+The architecture is approved. No implementation has started. Development begins with M0 after the architecture pull request is merged and the owner explicitly authorises it.

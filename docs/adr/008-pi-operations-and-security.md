@@ -1,6 +1,6 @@
 # ADR 008 — Raspberry Pi operations: scheduled container jobs with bounded privileges
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3)
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 003 — Curated discovery first; search and research deferred
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3; previously "Hybrid scheduled discovery and bounded research")
 
 ## Context
@@ -15,7 +15,7 @@ v0.1 put three discovery mechanisms in V1: curated feeds, search-provider discov
 2. Hacker News through its public API, as a discovery and attention signal.
 3. Reddit and other community sources, search-provider discovery and research-on-demand are deferred to M5. They are added only when coverage analysis in M4 shows a gap they would close.
 
-A first list of fifteen candidates, with what was verified about each, is in [`docs/planning/source-catalogue-draft.md`](../planning/source-catalogue-draft.md). It is a draft for the owner's editorial approval; no source in it is enabled.
+The owner approved nine sources as the initial editorial selection on 2026-11-21; they and the remaining candidates are listed in [`docs/planning/source-catalogue-draft.md`](../planning/source-catalogue-draft.md). Editorial approval is not permission to fetch or retain: no source is enabled until its terms record is complete (ADR-010). Anthropic's own announcements have no feed, so coverage of them is partial; this is accepted and revisited in M5 on evidence of missed stories.
 
 Each catalogue entry records its source role, polling interval, rate limit, the URL of its terms, the date those terms were reviewed, whether body fetching is permitted, and its retention settings (ADR-010). A source is not enabled until this is filled in. Catalogue changes require owner review.
 

@@ -1,6 +1,6 @@
 # ADR 004 — Evidence records and a deterministic editorial policy
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3)
 
 ## Context

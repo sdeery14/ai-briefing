@@ -1,8 +1,8 @@
 # AI Briefing — milestone plan and issue breakdown
 
-**Status:** Proposed, with [RFC v0.3](../rfc/AI-Briefing-RFC-v0.3.md). Replaces the v0.2 "M1 — Foundation & offline editorial evaluation" plan.
+**Status:** Approved by the owner on 2026-11-21, with [RFC v0.3](../rfc/AI-Briefing-RFC-v0.3.md). Replaces the v0.2 "M1 — Foundation & offline editorial evaluation" plan.
 
-Do not create GitHub issues or run `/round` until the owner accepts the RFC and ADRs.
+No implementation has started. Do not create GitHub issues or run `/round` until the architecture pull request is merged and the owner explicitly authorises development.
 
 ## Principles
 
@@ -36,18 +36,18 @@ These changes all touch protected paths and come before the protections exist, s
 
 | Step | Work | Who | Done when |
 |---|---|---|---|
-| 1 | Decide on RFC v0.3 and ADRs 001–011, and merge the architecture pull request | Owner | ADR statuses set by the owner |
+| 1 | Merge the architecture pull request. RFC v0.3 and ADRs 001–011 were accepted on 2026-11-21. | Owner | Merged |
 | 2 | Confirm the private benchmark answer key is not on any machine or account where a coding agent runs | Owner | Confirmation recorded. Do this before any further agent session; it takes minutes and is the one risk that cannot be undone. |
 | 3 | **PR A — licence and project files:** Apache-2.0 `LICENSE`, `NOTICE`, `SECURITY.md`, README | Agent, owner review | Merged |
 | 4 | **PR B — agent instructions:** `AGENTS.md` and `CLAUDE.md` with project rules, commands, hard limits and the Codex review section from ADR-011 | Agent, owner review | Merged |
 | 5 | **PR C — CI and ownership:** lint, types, tests, a guard that fails tests on network access, secret scanning, `CODEOWNERS` for the protected paths, the merge-eligibility job in report mode | Agent, owner review | Merged; checks run on the pull request itself |
 | 6 | Apply the ruleset on `main` (pull request required, the checks from step 5 required on an up-to-date branch, conversations resolved, linear history, no force push). Enable the Codex review app for the repository. | Owner | A test pull request with a failing check cannot merge; Codex reviews it; the eligibility job reports correctly for one protected and one unprotected change |
 | 7 | **PR D — `/round` port** with no merge step, its two helper scripts and one configuration file | Agent, owner review | A dry run lists a test milestone's issues and plan; the skill text contains no merge command |
-| 8 | Approve the [source catalogue draft](source-catalogue-draft.md) and complete each kept source's terms record | Owner | Approved list returned |
-| 9 | **PR E — configuration:** `config/models.yaml` (model identifiers and the verified price table from RFC §7) and `config/sources.yaml` from the approved catalogue, every source disabled until its terms record is complete | Agent, owner review | Merged |
+| 8 | Complete the terms record for each of the nine sources in the [approved selection](source-catalogue-draft.md). The editorial selection itself was approved on 2026-11-21. | Owner | Records returned; a source without one stays disabled |
+| 9 | **PR E — configuration:** `config/models.yaml` (model identifiers and the verified price table from RFC §7) and `config/sources.yaml` with the nine approved sources (arXiv as `cs.CL` only), every source disabled until its terms record is complete | Agent, owner review | Merged |
 | 10 | Create an Anthropic API key for AI Briefing with a provider-side spend limit. Store it outside the repository. | Owner | A one-line smoke call succeeds from the development machine |
 
-Steps 3 and 4 can be prepared together. Step 6 needs step 5 merged first, because the ruleset must name checks that exist. Step 8 can start any time after step 1 and is the only step likely to wait on the owner's reading time.
+Steps 3 and 4 can be prepared together. Step 6 needs step 5 merged first, because the ruleset must name checks that exist. Step 8 can start any time and is the only step likely to wait on the owner's reading time. M1 can begin with whichever sources have been enabled by then.
 
 ### Gate M2, not M1
 

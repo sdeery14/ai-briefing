@@ -1,6 +1,6 @@
 # ADR 010 — Content rights and retention
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (new in RFC v0.3)
 
 ## Context

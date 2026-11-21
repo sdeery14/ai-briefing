@@ -1,6 +1,6 @@
 # ADR 007 — Evaluation strategy: deterministic gates and prospective evaluation
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3; previously "Blind offline editorial benchmarking before live ranking". Absorbs the evaluation content of v0.1 ADR-009.)
 
 ## Context

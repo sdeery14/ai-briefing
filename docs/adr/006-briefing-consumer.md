@@ -1,6 +1,6 @@
 # ADR 006 — Briefing as a versioned data product; file exchange with Home Assistant
 
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (revised for RFC v0.3)
 
 ## Context
