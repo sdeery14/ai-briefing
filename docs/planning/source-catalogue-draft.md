@@ -6,6 +6,20 @@
 
 **Checked on:** 2026-11-21. "Verified" means a fact was observed directly that day: the feed URL returned a parseable feed, or a terms page was read.
 
+## Operating modes approved on 2026-11-21
+
+The terms of all nine sources have now been reviewed and the owner has approved an operating mode for each. The records are in [`docs/operations/source-terms-records.md`](../operations/source-terms-records.md) and the configuration is `config/sources.yaml`. Where this page and those differ, they are current and this page is history.
+
+| Source | Mode |
+|---|---|
+| arXiv `cs.CL` | Feed-summary: metadata and abstracts |
+| Google DeepMind blog, Google Research blog, Hugging Face blog | Metadata-only |
+| Simon Willison's Weblog | Metadata-only, from the long-form feed `https://simonwillison.net/atom/entries/` |
+| Hacker News | Metadata-only, through the official API |
+| OpenAI News, MLflow releases, Anthropic SDK releases | Disabled |
+
+The GitHub release feeds listed below should not be read as Atom feeds: GitHub's robots.txt disallows them for generic agents.
+
 ## Approved initial selection
 
 | # | Source | Purpose | Type and URL | Role | Terms status |
