@@ -22,6 +22,8 @@ What it reports, and where each fact comes from:
   The two are different and are never combined.
 - **codex** is the review state the configured reviewer account publishes, and counts only
   when it names the pull request's current head commit.
+- **p0_findings** lists unresolved P0 review threads from the reviewer or an allowed
+  author. Any entry ends the wait immediately, whatever the checks are doing.
 
 The merge-eligibility report is listed under ``informational``. It is not a required check
 and a green result there gives no permission to merge.
@@ -37,7 +39,9 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+import review_threads
 from round_lib import (
+    ESCALATE,
     PR_QUERY,
     Config,
     Gh,
@@ -206,6 +210,12 @@ def snapshot(gh: Gh, config: Config, number: int) -> dict[str, Any]:
     required = required_states(states, ruleset)
     comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
     codex = codex_state(comments, config, head, head_arrived_at(gh, config, head))
+    # A P0 from the reviewer or an allowed author must not wait for CI to finish.
+    critical = [
+        str(t.get("url") or t["id"])
+        for t in review_threads.unresolved_threads(gh, config, number)
+        if t["severity"] == ESCALATE and (t["from_reviewer"] or t["from_allowed_author"])
+    ]
     return {
         "pr": number,
         "head": head,
@@ -227,6 +237,7 @@ def snapshot(gh: Gh, config: Config, number: int) -> dict[str, Any]:
             if name not in required and name not in config.informational_checks
         },
         "codex": codex,
+        "p0_findings": critical,
         "problems": problems,
         "automatic_merge": False,
         "merge": "owner-only",
@@ -247,6 +258,8 @@ def settled(snap: dict[str, Any]) -> bool:
     """True when waiting longer will not change what the round should do next."""
     if snap["state"] != "OPEN" or snap["problems"]:
         return True
+    if snap.get("p0_findings"):
+        return True  # stop waiting at once so the round can escalate
     if snap["ci"] == "fail":
         return True
     if reviewer_error(snap["codex"]):

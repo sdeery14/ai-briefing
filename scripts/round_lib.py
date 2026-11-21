@@ -26,7 +26,11 @@ CONFIG_PATH = REPO_ROOT / ".claude" / "skills" / "round" / "config.json"
 # ADR-011: at most two fix rounds. The configuration may lower this, never raise it.
 HARD_MAX_FIX_ROUNDS = 2
 
-SEVERITY = re.compile(r"\bP[0-3]\b")
+# A finding's severity is the badge the reviewer puts on it, or a tag at the very start
+# of the comment. A "P0" that only appears later in the text is the finding talking about
+# severities, not its own severity.
+SEVERITY_BADGE = re.compile(r"!\[(P[0-3]) Badge\]")
+SEVERITY_LEADING = re.compile(r"^[\s*_`#>\[(-]*(P[0-3])\b")
 ESCALATE = "P0"
 
 Gh = Callable[[Sequence[str]], Any]
@@ -167,9 +171,12 @@ def node_is_reviewer(node: object, config: Config) -> bool:
 
 
 def severity_of(body: str) -> str | None:
-    """The most severe ``P0``-``P3`` tag in a comment, if it has one."""
-    found = SEVERITY.findall(body)
-    return min(found) if found else None
+    """A finding's own severity: its badge, else a tag that opens the comment, else none."""
+    badge = SEVERITY_BADGE.search(body)
+    if badge:
+        return badge.group(1)
+    leading = SEVERITY_LEADING.match(body)
+    return leading.group(1) if leading else None
 
 
 def slug(title: str, limit: int = 40) -> str:

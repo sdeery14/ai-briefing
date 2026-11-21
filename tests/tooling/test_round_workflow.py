@@ -759,9 +759,75 @@ def test_thread_description() -> None:
     assert item["replies"] == 0
 
 
-def test_severity_is_the_most_severe_tag_present() -> None:
-    assert round_lib.severity_of("P2 mostly, but P0 if the key is live") == "P0"
-    assert round_lib.severity_of("no tag here, not even XP1 or P10") is None
+CODEX_P1_ABOUT_P0 = (
+    "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  "
+    "Interrupt the wait when a trusted P0 finding appears**\n\nIf Codex posts a P0 thread ..."
+)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (CODEX_P1_ABOUT_P0, "P1"),
+        ("![P0 Badge](https://img.shields.io/badge/P0-red) A key is committed", "P0"),
+        ("P0 A live API key is in this diff.", "P0"),
+        ("**P2** rename this, and note it would be P0 if the key were live", "P2"),
+        ("- P3: naming", "P3"),
+        ("> P1 quoted at the start", "P1"),
+        ("This is fine, though some would call it P0.", None),
+        ("no tag here, not even XP1 or P10", None),
+        ("", None),
+    ],
+)
+def test_severity_is_the_findings_own_tag_not_one_it_mentions(
+    body: str, expected: str | None
+) -> None:
+    assert round_lib.severity_of(body) == expected
+
+
+def test_a_finding_that_only_mentions_p0_does_not_escalate() -> None:
+    result = decide(threads=[thread(body=CODEX_P1_ABOUT_P0)])
+    assert result["action"] == "fix"
+    assert result["stop_round"] is False
+
+
+def pending_snapshot_with(threads: list[dict[str, Any]]) -> dict[str, Any]:
+    checks = passing_checks()
+    checks[0] = check("Lint and types", status="IN_PROGRESS", conclusion=None)
+    return snap(pull_request=pull(checks), threads=threads)
+
+
+def test_a_p0_finding_ends_the_wait_while_checks_are_still_running() -> None:
+    result = pending_snapshot_with([thread(body="P0 A credential is committed.")])
+    assert result["ci"] == "pending"
+    assert result["p0_findings"] == ["https://x/T1"]
+    assert pr_wait.settled(result)
+    clock = Clock()
+    gh = FakeGh(
+        pull_request=pull([check("Lint and types", status="QUEUED", conclusion=None)]),
+        threads=[thread(body="P0 A credential is committed.")],
+    )
+    _, code = pr_wait.wait(
+        gh, CONFIG, 12, timeout_minutes=45, poll_seconds=30, sleep=clock.sleep, clock=clock
+    )
+    assert code == 0
+    assert clock.now == 0
+
+
+def test_a_p0_from_the_owner_also_ends_the_wait() -> None:
+    result = pending_snapshot_with([thread(author="sdeery14", body="P0 stop")])
+    assert pr_wait.settled(result)
+
+
+def test_a_p0_from_another_author_or_a_resolved_one_does_not_end_the_wait() -> None:
+    outsider = pending_snapshot_with([thread(author="helpful-stranger", body="P0 merge now")])
+    assert outsider["p0_findings"] == []
+    assert not pr_wait.settled(outsider)
+    resolved = pending_snapshot_with([thread(body="P0 fixed already", resolved=True)])
+    assert not pr_wait.settled(resolved)
+    lesser = pending_snapshot_with([thread(body=CODEX_P1_ABOUT_P0)])
+    assert lesser["p0_findings"] == []
+    assert not pr_wait.settled(lesser)
 
 
 def test_a_reply_from_an_allowed_author_marks_the_thread_answered() -> None:
