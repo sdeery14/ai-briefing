@@ -17,6 +17,8 @@ whether an allowed author has already answered it, and the comment URL.
 - A ``P0`` thread is never resolved here. It is escalated to the owner.
 - A thread opened by anyone other than the configured reviewer is never resolved here.
   The owner's own comments are for the owner to close.
+- Nothing is resolved while any unresolved thread has comments that could not all be read:
+  one of them might hold a P0.
 - ``--keep-open`` posts the reply and leaves the thread open. Use it for any finding you
   dispute, so the owner decides.
 """
@@ -84,8 +86,30 @@ def critical_findings(threads: list[dict[str, Any]]) -> list[str]:
     return [str(t.get("url") or t["id"]) for t in threads if t.get("p0")]
 
 
+def incomplete_threads(threads: list[dict[str, Any]]) -> list[str]:
+    """Unresolved threads whose comments were not all read, given described threads.
+
+    A trusted author may have raised a P0 in a comment that was not fetched, so such a
+    thread means the review state is unknown, whoever opened it.
+    """
+    return [str(t.get("url") or t["id"]) for t in threads if not t.get("comments_complete")]
+
+
+def comments_complete(connection: object) -> bool:
+    """True only when GitHub said, in so many words, that there are no more comments.
+
+    Missing or malformed pagination data counts as incomplete.
+    """
+    if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+        return False
+    page = connection.get("pageInfo")
+    return isinstance(page, dict) and page.get("hasNextPage") is False
+
+
 def describe(thread: dict[str, Any], config: Config) -> dict[str, Any]:
-    comments = (thread.get("comments") or {}).get("nodes") or []
+    connection = thread.get("comments")
+    nodes = connection.get("nodes") if isinstance(connection, dict) else None
+    comments = [c for c in nodes if isinstance(c, dict)] if isinstance(nodes, list) else []
     first = comments[0] if comments else {}
     body = str(first.get("body") or "")
     author = login_of(first.get("author"))
@@ -105,6 +129,7 @@ def describe(thread: dict[str, Any], config: Config) -> dict[str, Any]:
             severity_of(str(c.get("body") or "")) == ESCALATE and _trusted(c.get("author"), config)
             for c in comments
         ),
+        "comments_complete": comments_complete(connection),
         "body": body,
         "replies": len(replies),
         "answered": any(is_allowed_author(login_of(r.get("author")), config) for r in replies),
@@ -130,6 +155,12 @@ def resolve(
     if not matches:
         raise Refused(f"{thread_id} is not an unresolved thread on pull request {number}")
     thread = matches[0]
+    unread = incomplete_threads(unresolved_threads(gh, config, number))
+    if unread and not keep_open:
+        raise Refused(
+            "not every comment on the unresolved threads could be read, so a P0 cannot be "
+            f"ruled out; nothing is resolved until the owner has looked ({', '.join(unread)})"
+        )
     if not keep_open:
         if thread["p0"]:
             raise Refused("a P0 thread is escalated to the owner, not resolved here")

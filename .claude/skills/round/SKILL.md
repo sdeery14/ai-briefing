@@ -111,7 +111,7 @@ leaves out the issue text and the owner's comments, so do not work from it.
 
    | `action` | What to do |
    |---|---|
-   | `escalate` | **A P0 finding, or the review threads could not be read so one cannot be ruled out. Stop the whole round now.** This comes before every other condition: a failing check, a ruleset mismatch, a timeout or a spent fix budget does not change it. Do not attempt a fix, do not push, do not rewrite history. Label the pull request `needs-human`, tell the owner what was found and what is at risk without repeating any secret, and end the round. |
+   | `escalate` | **A P0 finding, or the review threads could not be read so one cannot be ruled out (that includes a thread with more comments than could be fetched). Stop the whole round now.** This comes before every other condition: a failing check, a ruleset mismatch, a timeout or a spent fix budget does not change it. Do not attempt a fix, do not push, do not rewrite history. Label the pull request `needs-human`, tell the owner what was found and what is at risk without repeating any secret, and end the round. |
    | `wait` | Run `pr_wait.py` again. |
    | `fix` | Start a fix round (below). |
    | `resolve-conflicts` | `git fetch origin && git merge origin/main`, resolve, run the local checks, push. Never force-push. Comment `@codex review`. Not a fix round. Wait again. |

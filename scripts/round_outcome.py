@@ -122,6 +122,16 @@ def decide(
             stop=True,
             action="escalate",
         )
+    unread = review_threads.incomplete_threads(threads)
+    unread += [str(u) for u in snap.get("review_incomplete") or [] if str(u) not in unread]
+    if unread:
+        return needs_human(
+            "not every comment on the unresolved review threads could be read, so a critical "
+            "finding cannot be ruled out: stop the round and tell the owner "
+            f"({', '.join(unread)})",
+            stop=True,
+            action="escalate",
+        )
     if not threads_readable or snap.get("p0_unknown"):
         return needs_human(
             "the review threads could not be read, so a critical finding cannot be ruled out: "
@@ -284,10 +294,17 @@ def record_fix_round(gh: Gh, config: Config, number: int) -> str:
     Refuses once the limit has been used, and refuses while a P0 finding is open: a P0 is
     escalated, not fixed.
     """
-    if review_threads.critical_findings(review_threads.unresolved_threads(gh, config, number)):
+    unresolved = review_threads.unresolved_threads(gh, config, number)
+    if review_threads.critical_findings(unresolved):
         raise EscalationRequired(
             f"pull request {number} has an open P0 finding: stop the round and escalate "
             "to the owner; do not start a fix round"
+        )
+    if review_threads.incomplete_threads(unresolved):
+        raise EscalationRequired(
+            f"pull request {number} has review threads whose comments could not all be "
+            "read, so a P0 cannot be ruled out: stop the round and tell the owner; do not "
+            "start a fix round"
         )
     comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
     used = fix_rounds_used(comments, config)

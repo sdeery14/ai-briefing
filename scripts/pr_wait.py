@@ -24,6 +24,8 @@ What it reports, and where each fact comes from:
   when it names the pull request's current head commit.
 - **p0_findings** lists unresolved P0 review threads from the reviewer or an allowed
   author. Any entry ends the wait immediately, whatever the checks are doing.
+- **review_incomplete** lists unresolved threads whose comments could not all be read. A
+  P0 cannot be ruled out there, so any entry also ends the wait immediately.
 
 The merge-eligibility report is listed under ``informational``. It is not a required check
 and a green result there gives no permission to merge.
@@ -210,9 +212,9 @@ def snapshot(gh: Gh, config: Config, number: int) -> dict[str, Any]:
     comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
     codex = codex_state(comments, config, head, head_arrived_at(gh, config, head))
     # A P0 from the reviewer or an allowed author must not wait for CI to finish.
-    critical = review_threads.critical_findings(
-        review_threads.unresolved_threads(gh, config, number)
-    )
+    unresolved = review_threads.unresolved_threads(gh, config, number)
+    critical = review_threads.critical_findings(unresolved)
+    unread = review_threads.incomplete_threads(unresolved)
     return {
         "pr": number,
         "head": head,
@@ -235,6 +237,7 @@ def snapshot(gh: Gh, config: Config, number: int) -> dict[str, Any]:
         },
         "codex": codex,
         "p0_findings": critical,
+        "review_incomplete": unread,
         "problems": problems,
         "automatic_merge": False,
         "merge": "owner-only",
@@ -255,7 +258,7 @@ def settled(snap: dict[str, Any]) -> bool:
     """True when waiting longer will not change what the round should do next."""
     if snap["state"] != "OPEN" or snap["problems"]:
         return True
-    if snap.get("p0_findings"):
+    if snap.get("p0_findings") or snap.get("review_incomplete"):
         return True  # stop waiting at once so the round can escalate
     if snap["ci"] == "fail":
         return True

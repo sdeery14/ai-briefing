@@ -226,7 +226,10 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved isOutdated path line originalLine
-          comments(first: 50) { nodes { author { __typename login } body url createdAt } }
+          comments(first: 50) {
+            pageInfo { hasNextPage }
+            nodes { author { __typename login } body url createdAt }
+          }
         }
       }
     }

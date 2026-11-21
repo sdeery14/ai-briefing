@@ -124,6 +124,18 @@ def codex_comment(
     return {"user": {"login": login, "type": kind}, "body": body, "created_at": created}
 
 
+COMPLETE: dict[str, Any] = {"hasNextPage": False}
+OMITTED = object()
+
+
+def comment_connection(comments: list[dict[str, Any]], page_info: object) -> dict[str, Any]:
+    """A thread's comments as GraphQL returns them, with or without pagination data."""
+    connection: dict[str, Any] = {"nodes": comments}
+    if page_info is not OMITTED:
+        connection["pageInfo"] = page_info
+    return connection
+
+
 def author_node(login: str) -> dict[str, str]:
     """An author as GraphQL returns it: an app has no ``[bot]`` suffix, and is typed Bot."""
     if login == REVIEWER:
@@ -138,6 +150,7 @@ def thread(
     body: str = "P1 The budget check is skipped.",
     replies: Sequence[str] = (),
     resolved: bool = False,
+    page_info: object = COMPLETE,
 ) -> dict[str, Any]:
     comments = [{"author": author_node(author), "body": body, "url": f"https://x/{thread_id}"}]
     comments += [{"author": author_node(login), "body": "reply", "url": "u"} for login in replies]
@@ -148,7 +161,7 @@ def thread(
         "path": "src/ai_briefing/llm/client.py",
         "line": 10,
         "originalLine": 10,
-        "comments": {"nodes": comments},
+        "comments": comment_connection(comments, page_info),
     }
 
 
@@ -1564,3 +1577,161 @@ def test_the_skill_stops_the_round_on_stop_round_and_always_asks_for_the_decisio
     assert "If `stop_round` is true, the round ends now" in text
     assert "could not be read so one cannot be ruled out" in text
     assert "If it refuses because a P0 finding is open" in text
+
+
+# --- Truncated review-thread comments fail closed -------------------------------------------
+#
+# Second owner-directed correction. Only the first 50 comments of a thread are fetched. If
+# GitHub does not confirm that was all of them, a P0 may be hiding in the rest.
+
+INCOMPLETE_PAGE_INFO: list[tuple[str, object]] = [
+    ("more comments exist", {"hasNextPage": True}),
+    ("pageInfo missing", OMITTED),
+    ("pageInfo null", None),
+    ("pageInfo empty", {}),
+    ("hasNextPage null", {"hasNextPage": None}),
+    ("hasNextPage a string", {"hasNextPage": "false"}),
+    ("hasNextPage zero", {"hasNextPage": 0}),
+    ("pageInfo a list", []),
+    ("pageInfo a string", "none"),
+]
+INCOMPLETE_IDS = [name for name, _ in INCOMPLETE_PAGE_INFO]
+INCOMPLETE_VALUES = [value for _, value in INCOMPLETE_PAGE_INFO]
+
+
+def test_the_thread_query_asks_for_comment_pagination_data() -> None:
+    assert "comments(first: 50)" in THREADS_QUERY
+    comments_block = THREADS_QUERY.split("comments(first: 50)", 1)[1]
+    assert "pageInfo { hasNextPage }" in comments_block
+
+
+def test_a_complete_comment_list_is_complete() -> None:
+    item = review_threads.describe(thread(), CONFIG)
+    assert item["comments_complete"] is True
+    assert review_threads.incomplete_threads([item]) == []
+    result = round_outcome.status(FakeGh(threads=[thread(replies=["sdeery14"])]), CONFIG, 12)
+    assert result["stop_round"] is False
+
+
+@pytest.mark.parametrize("page_info", INCOMPLETE_VALUES, ids=INCOMPLETE_IDS)
+def test_truncated_or_malformed_comment_lists_are_incomplete(page_info: object) -> None:
+    item = review_threads.describe(thread(page_info=page_info), CONFIG)
+    assert item["comments_complete"] is False
+    assert review_threads.incomplete_threads([item]) == ["https://x/T1"]
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [
+        None,
+        {},
+        {"pageInfo": {"hasNextPage": False}},
+        {"nodes": None, "pageInfo": COMPLETE},
+        [],
+        "x",
+    ],
+)
+def test_a_malformed_comment_connection_is_incomplete_and_does_not_crash(
+    connection: object,
+) -> None:
+    broken = thread()
+    broken["comments"] = connection
+    item = review_threads.describe(broken, CONFIG)
+    assert item["comments_complete"] is False
+    assert item["p0"] is False
+    assert_escalates(decide(threads=[broken]))
+
+
+@pytest.mark.parametrize("page_info", INCOMPLETE_VALUES, ids=INCOMPLETE_IDS)
+def test_an_incomplete_thread_stops_the_round(page_info: object) -> None:
+    gh = FakeGh(threads=[thread(page_info=page_info)])
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert_escalates(result)
+    assert "cannot be ruled out" in result["reasons"][0]
+    assert "https://x/T1" in result["reasons"][0]
+    assert gh.mutations == []
+
+
+@pytest.mark.parametrize("author", [REVIEWER, "sdeery14", "helpful-stranger"])
+def test_an_incomplete_thread_stops_the_round_whoever_opened_it(author: str) -> None:
+    # A trusted author could have escalated any thread in a comment that was not fetched.
+    opened = thread(author=author, body="P3 naming", page_info={"hasNextPage": True})
+    assert_escalates(round_outcome.status(FakeGh(threads=[opened]), CONFIG, 12))
+
+
+@pytest.mark.parametrize("condition", sorted(MASKING_CONDITIONS))
+def test_an_incomplete_thread_stops_the_round_under_every_other_condition(condition: str) -> None:
+    truncated = thread(page_info={"hasNextPage": True})
+    gh = FakeGh(threads=[truncated], **MASKING_CONDITIONS[condition])
+    assert_escalates(round_outcome.status(gh, CONFIG, 12))
+    snapshot = pr_wait.snapshot(gh, CONFIG, 12)
+    assert snapshot["review_incomplete"] == ["https://x/T1"]
+    assert pr_wait.settled(snapshot)
+
+
+def test_an_incomplete_thread_with_the_fix_budget_spent_still_stops_the_round() -> None:
+    truncated = thread(page_info={"hasNextPage": True})
+    assert_escalates(decide(failing_snapshot(), [truncated], fix_rounds=2))
+
+
+def test_a_known_trusted_p0_is_still_reported_first_when_another_thread_is_truncated() -> None:
+    threads = [p0_thread(), thread("T2", page_info={"hasNextPage": True})]
+    result = round_outcome.status(FakeGh(threads=threads), CONFIG, 12)
+    assert_escalates(result)
+    assert result["reasons"][0].startswith("P0 finding")
+    assert "https://x/TP0" in result["reasons"][0]
+
+
+def test_a_p0_found_in_the_fetched_part_of_a_truncated_thread_escalates_as_a_p0() -> None:
+    truncated_p0 = thread("TP0", body=P0_THREAD_BODY, page_info={"hasNextPage": True})
+    result = round_outcome.status(FakeGh(threads=[truncated_p0]), CONFIG, 12)
+    assert_escalates(result)
+    assert result["reasons"][0].startswith("P0 finding")
+
+
+def test_a_resolved_truncated_thread_does_not_stop_the_round() -> None:
+    gh = FakeGh(threads=[thread(resolved=True, page_info={"hasNextPage": True})])
+    assert round_outcome.status(gh, CONFIG, 12)["outcome"] == "ready-for-owner"
+
+
+def test_the_wait_ends_at_once_on_an_incomplete_thread() -> None:
+    clock = Clock()
+    gh = FakeGh(
+        pull_request=pull(pending_checks()),
+        threads=[thread(page_info={"hasNextPage": True})],
+    )
+    result, code = pr_wait.wait(
+        gh, CONFIG, 12, timeout_minutes=45, poll_seconds=30, sleep=clock.sleep, clock=clock
+    )
+    assert code == 0
+    assert clock.now == 0
+    assert result["review_incomplete"] == ["https://x/T1"]
+    assert_escalates(decide(result, []))
+
+
+@pytest.mark.parametrize("page_info", INCOMPLETE_VALUES, ids=INCOMPLETE_IDS)
+def test_no_thread_is_resolved_while_any_thread_is_incomplete(page_info: object) -> None:
+    gh = FakeGh(threads=[thread("T1"), thread("T2", page_info=page_info)])
+    for target in ("T1", "T2"):
+        with pytest.raises(review_threads.Refused, match="cannot be ruled out"):
+            review_threads.resolve(gh, CONFIG, 12, target, "Fixed in abc1234", keep_open=False)
+    assert gh.mutations == []
+
+
+def test_a_reply_that_leaves_the_thread_open_is_still_possible() -> None:
+    gh = FakeGh(threads=[thread("T1", page_info={"hasNextPage": True})])
+    review_threads.resolve(gh, CONFIG, 12, "T1", "Escalated to the owner", keep_open=True)
+    assert [m[0] for m in gh.mutations] == [REPLY_MUTATION]
+
+
+@pytest.mark.parametrize("page_info", INCOMPLETE_VALUES, ids=INCOMPLETE_IDS)
+def test_no_fix_round_starts_while_any_thread_is_incomplete(page_info: object) -> None:
+    gh = FakeGh(threads=[thread(page_info=page_info)])
+    with pytest.raises(round_outcome.EscalationRequired, match="could not all be"):
+        round_outcome.record_fix_round(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_a_fix_round_still_starts_when_every_thread_is_complete() -> None:
+    gh = FakeGh(threads=[thread()])
+    assert round_outcome.record_fix_round(gh, CONFIG, 12) == "recorded fix round 1 of 2"
