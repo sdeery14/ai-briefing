@@ -15,6 +15,7 @@ Notes for Claude Code sessions, beyond what AGENTS.md says. AGENTS.md is the sha
 | Open questions | `docs/reviews/v0.3-open-questions.md` |
 | Rules for all agents and reviewers | `AGENTS.md` |
 | Development workflow and merge authority | `docs/adr/011-development-workflow-and-merge-authority.md` |
+| CI checks, protected paths in practice, owner's GitHub settings | `docs/operations/repository-safeguards.md` |
 
 ## Finding the current work
 
@@ -37,7 +38,7 @@ Notes for Claude Code sessions, beyond what AGENTS.md says. AGENTS.md is the sha
 
 ## Before opening a pull request
 
-- Run every check that exists for the files you touched, and read the output. As of M0 there is no package, test suite or CI, so for documentation changes the checks are: relative links resolve, the documents agree with the RFC and ADRs, and nothing private is included.
+- Run every check that exists for the files you touched, and read the output. The commands are in AGENTS.md. Today they cover development tooling only; there are no application tests. For documentation changes, also check that relative links resolve, the documents agree with the RFC and ADRs, and nothing private is included.
 - Re-read the diff. Look for anything outside the issue's scope and for any protected path.
 - Scan for credentials, personal information, private labels and third-party text.
 - In the description, list the checks you ran and their real results. If something could not be checked, say that plainly. Never write "tests pass" for tests that do not exist or were not run.

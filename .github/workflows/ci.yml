@@ -1,0 +1,115 @@
+name: CI
+
+# Tier 0 (ADR-007): runs on every pull request with no secrets.
+#
+# Scope today: the repository's own development tooling (scripts/ and tests/tooling/).
+# There is no application package yet, so these jobs say nothing about application
+# behaviour. M1 issue 1.1 adds the package; the same jobs then cover it.
+#
+# Safe for pull requests from forks: the `pull_request` event gives a fork a read-only
+# token and no secrets, and nothing here needs more.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.9.9"
+  UV_SHA256: "9ec303873e00deed44d1b2b52b85ab7aa55d849588d7242298748390eaea07ef"
+  UV_PYTHON: "3.12"
+  UV_LOCKED: "1" # fail if uv.lock is out of date instead of silently re-resolving
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/uv.tar.gz \
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check --strict
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/uv.tar.gz -C "$HOME/.local/bin" --strip-components=1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv sync --group dev
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync mypy
+      - name: Scope note
+        if: always()
+        run: |
+          {
+            echo "### Lint and types"
+            echo "Covers development tooling only (\`scripts/\`, \`tests/\`)."
+            echo "No application package exists yet (M1 issue 1.1)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  tests:
+    name: Tests (offline)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/uv.tar.gz \
+            "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check --strict
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/uv.tar.gz -C "$HOME/.local/bin" --strip-components=1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Dependencies are installed before the tests start. The tests themselves run
+      # with the offline guard forced on, whatever tests/conftest.py says.
+      - run: uv sync --group dev
+      - name: pytest with the offline guard forced on
+        env:
+          PYTHONPATH: scripts
+        run: uv run --no-sync pytest -p offline_guard
+      - name: Scope note
+        if: always()
+        run: |
+          {
+            echo "### Tests (offline)"
+            echo "Covers the offline guard and the merge-eligibility logic only."
+            echo "No application tests exist yet (M1 issue 1.1 onwards)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan the whole history, not only the tip
+          persist-credentials: false
+      - name: Install gitleaks (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum --check --strict
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/gitleaks.tar.gz -C "$HOME/.local/bin" gitleaks
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: gitleaks
+        run: gitleaks git --redact --no-banner --verbose .
