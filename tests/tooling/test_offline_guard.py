@@ -137,3 +137,84 @@ def test_uninstall_and_install_round_trip() -> None:
     assert offline_guard.is_active()
     with pytest.raises(NetworkAccessBlocked):
         socket.getaddrinfo("example.com", 443)
+
+
+# --- Reverse DNS lookups ---------------------------------------------------------------------
+
+EXTERNAL_ADDRESSES = ["192.0.2.1", "10.0.0.1", "169.254.169.254", "2001:db8::1", "example.com"]
+
+
+@pytest.mark.parametrize("host", EXTERNAL_ADDRESSES)
+def test_gethostbyaddr_of_an_external_address_is_blocked(host: str) -> None:
+    with pytest.raises(NetworkAccessBlocked, match="reverse lookup"):
+        socket.gethostbyaddr(host)
+
+
+@pytest.mark.parametrize("address", ["192.0.2.1", "10.0.0.1", "169.254.169.254"])
+@pytest.mark.parametrize("flags", [0, socket.NI_NAMEREQD, socket.NI_NUMERICSERV])
+def test_getnameinfo_of_an_external_address_is_blocked(address: str, flags: int) -> None:
+    with pytest.raises(NetworkAccessBlocked, match="reverse lookup"):
+        socket.getnameinfo((address, 80), flags)
+
+
+def test_getnameinfo_of_an_external_ipv6_address_is_blocked() -> None:
+    with pytest.raises(NetworkAccessBlocked):
+        socket.getnameinfo(("2001:db8::1", 80, 0, 0), 0)
+
+
+@pytest.mark.parametrize("sockaddr", [(), None, "192.0.2.1", (None, 80)])
+def test_getnameinfo_with_an_unusable_address_is_blocked_not_passed_through(
+    sockaddr: object,
+) -> None:
+    with pytest.raises(NetworkAccessBlocked):
+        socket.getnameinfo(sockaddr, 0)  # type: ignore[arg-type]
+
+
+def test_gethostbyaddr_of_loopback_still_works() -> None:
+    name, _aliases, addresses = socket.gethostbyaddr("127.0.0.1")
+    assert name
+    assert "127.0.0.1" in addresses
+
+
+def test_getnameinfo_of_loopback_still_works() -> None:
+    host, service = socket.getnameinfo(("127.0.0.1", 80), 0)
+    assert host
+    assert service
+
+
+@pytest.mark.parametrize("address", ["192.0.2.1", "10.0.0.1", "127.0.0.1"])
+def test_numeric_only_getnameinfo_is_allowed_because_it_asks_no_resolver(address: str) -> None:
+    flags = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+    assert socket.getnameinfo((address, 8080), flags) == (address, "8080")
+
+
+def test_install_and_uninstall_patch_and_restore_the_reverse_lookup_functions() -> None:
+    import _socket
+
+    guarded_addr = socket.gethostbyaddr
+    guarded_info = socket.getnameinfo
+    assert guarded_addr is not _socket.gethostbyaddr
+    assert guarded_info is not _socket.getnameinfo
+    offline_guard.uninstall()
+    try:
+        assert socket.gethostbyaddr is _socket.gethostbyaddr
+        assert socket.getnameinfo is _socket.getnameinfo
+        # Uninstalling twice is harmless.
+        offline_guard.uninstall()
+        assert socket.gethostbyaddr is _socket.gethostbyaddr
+    finally:
+        offline_guard.install()
+    assert socket.gethostbyaddr is guarded_addr
+    assert socket.getnameinfo is guarded_info
+    # Installing twice must not capture the guards as the "originals".
+    offline_guard.install()
+    offline_guard.uninstall()
+    try:
+        assert socket.gethostbyaddr is _socket.gethostbyaddr
+        assert socket.getnameinfo is _socket.getnameinfo
+    finally:
+        offline_guard.install()
+    with pytest.raises(NetworkAccessBlocked):
+        socket.gethostbyaddr("192.0.2.1")
+    with pytest.raises(NetworkAccessBlocked):
+        socket.getnameinfo(("192.0.2.1", 80), 0)

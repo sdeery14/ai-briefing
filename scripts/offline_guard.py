@@ -8,7 +8,10 @@ For the whole test session it replaces the socket entry points so that:
 
 - connecting, or sending a datagram, to anything other than a loopback address raises
   ``NetworkAccessBlocked``;
-- resolving any host name other than ``localhost`` raises ``NetworkAccessBlocked``.
+- resolving any host name other than ``localhost`` raises ``NetworkAccessBlocked``;
+- a reverse lookup (``gethostbyaddr``, ``getnameinfo``) of anything other than a loopback
+  address raises ``NetworkAccessBlocked``. ``getnameinfo`` with ``NI_NUMERICHOST`` is
+  allowed for any address, because it only formats the number and asks no resolver.
 
 Loopback and Unix-domain sockets stay usable, because tests legitimately start local
 servers and connect to closed local ports.
@@ -106,6 +109,20 @@ def _guarded_gethostbyname_ex(host: Any) -> Any:
     return _ORIGINALS["gethostbyname_ex"](host)
 
 
+def _guarded_gethostbyaddr(host: Any) -> Any:
+    if not is_loopback_host(host):
+        raise _refuse("reverse lookup of", host)
+    return _ORIGINALS["gethostbyaddr"](host)
+
+
+def _guarded_getnameinfo(sockaddr: Any, flags: Any) -> Any:
+    host = sockaddr[0] if isinstance(sockaddr, tuple) and sockaddr else None
+    numeric_only = isinstance(flags, int) and bool(flags & socket.NI_NUMERICHOST)
+    if not numeric_only and not is_loopback_host(host):
+        raise _refuse("reverse lookup of", host)
+    return _ORIGINALS["getnameinfo"](sockaddr, flags)
+
+
 def is_active() -> bool:
     return bool(_ORIGINALS)
 
@@ -120,6 +137,8 @@ def install() -> None:
         getaddrinfo=socket.getaddrinfo,
         gethostbyname=socket.gethostbyname,
         gethostbyname_ex=socket.gethostbyname_ex,
+        gethostbyaddr=socket.gethostbyaddr,
+        getnameinfo=socket.getnameinfo,
     )
     socket.socket.connect = _guarded_connect  # type: ignore[method-assign,assignment]
     socket.socket.connect_ex = _guarded_connect_ex  # type: ignore[method-assign,assignment]
@@ -127,6 +146,8 @@ def install() -> None:
     socket.getaddrinfo = _guarded_getaddrinfo
     socket.gethostbyname = _guarded_gethostbyname
     socket.gethostbyname_ex = _guarded_gethostbyname_ex
+    socket.gethostbyaddr = _guarded_gethostbyaddr
+    socket.getnameinfo = _guarded_getnameinfo
 
 
 def uninstall() -> None:
@@ -138,6 +159,8 @@ def uninstall() -> None:
     socket.getaddrinfo = _ORIGINALS["getaddrinfo"]
     socket.gethostbyname = _ORIGINALS["gethostbyname"]
     socket.gethostbyname_ex = _ORIGINALS["gethostbyname_ex"]
+    socket.gethostbyaddr = _ORIGINALS["gethostbyaddr"]
+    socket.getnameinfo = _ORIGINALS["getnameinfo"]
     _ORIGINALS.clear()
 
 
