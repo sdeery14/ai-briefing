@@ -17,6 +17,8 @@ dev = [
   "ruff>=0.8",
   "mypy>=1.13",
   "pytest>=8.3",
+  "pyyaml>=6.0", # tests read config/*.yaml; the application will need it from M1 issue 1.4
+  "types-pyyaml>=6.0",
 ]
 
 [tool.uv]

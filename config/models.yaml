@@ -1,0 +1,89 @@
+# Model provider, model identifiers, prices and budget (RFC v0.3 section 7, ADR-009).
+#
+# Protected path: any change here needs the owner's review (ADR-011).
+# No credential belongs in this file. The API key is read from the environment at run time.
+
+schema: models.v1
+
+provider:
+  name: anthropic
+  api: claude-api
+  api_version: "2026-10-21"
+  api_key_env: ANTHROPIC_API_KEY
+
+# Checked against Anthropic's models overview and pricing pages on the date below.
+# Prices are US dollars per million tokens on the first-party API.
+price_table:
+  version: "2026-11-21"
+  verified_on: 2026-11-21
+  sources:
+    - https://platform.claude.com/docs/en/about-claude/models/overview
+    - https://platform.claude.com/docs/en/about-claude/pricing
+
+models:
+  claude-haiku-5-5:
+    tier: inexpensive
+    context_window_tokens: 1000000
+    max_output_tokens: 128000
+    default_effort: medium
+    structured_output: true
+    # A request whose prompt is over this many input tokens is billed entirely at the
+    # long-prompt prices. Screening is batched to stay under it.
+    long_prompt_threshold_tokens: 100000
+    prices:
+      standard:
+        input: 0.10
+        output: 0.50
+        cache_read: 0.01
+        cache_write_5m: 0.125
+      long_prompt:
+        input: 0.50
+        output: 2.50
+        cache_read: 0.05
+        cache_write_5m: 0.625
+  claude-sonnet-5-5:
+    tier: capable
+    context_window_tokens: 1000000
+    max_output_tokens: 128000
+    default_effort: high
+    structured_output: true
+    prices:
+      standard:
+        input: 2.00
+        output: 10.00
+        cache_read: 0.10
+        cache_write_5m: 2.50
+
+# Which model each task uses, and the effort it asks for. Effort is always set explicitly.
+# Sampling parameters are not used: these models reject non-default values.
+tasks:
+  screening:
+    model: claude-haiku-5-5
+    effort: low
+  assessment:
+    model: claude-haiku-5-5
+    effort: medium
+  escalated_assessment:
+    model: claude-sonnet-5-5
+    effort: high
+  baseline_digest:
+    model: claude-haiku-5-5
+    effort: medium
+  concept_note:
+    model: claude-haiku-5-5
+    effort: medium
+
+# Enforced by the application before every call (ADR-009). Provisional until M1 measures
+# real volume. A spending limit set at the provider is a second, independent control.
+budget:
+  currency: USD
+  monthly_limit: 15.00
+  provisional: true
+  # When the budget is tight, calls are shed in this order, first to last.
+  shed_order:
+    - experimental_judges
+    - baseline_digest
+    - escalated_assessment
+    - concept_note
+    - assessment
+    - screening

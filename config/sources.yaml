@@ -1,0 +1,359 @@
+# Source catalogue and usage terms (ADR-003, ADR-010).
+#
+# Protected path: any change here needs the owner's review (ADR-011).
+#
+# Operating modes were approved by the owner on 2026-11-21 for personal, non-commercial use.
+# The reasoning, quotations and links behind each record are in
+# docs/operations/source-terms-records.md. This is an operating policy, not legal advice.
+#
+# Access, storage and submission to the model provider are three separate permissions:
+#
+#   terms.automated_access   whether reading the feed or API automatically is permitted
+#                            explicit | interpretation | uncertain
+#   store.*                  what may be kept in the database
+#   model_submission         what may be sent to the model provider
+#                            none | title_and_summary
+#
+# Modes:
+#   feed_summary    metadata plus the summary the source's own feed supplies
+#   metadata_only   title, link, dates and identifiers only; feed summaries are discarded
+#   disabled        nothing is fetched
+#
+# No source is approved for fetching article bodies. No source may be enabled, moved to a
+# less restrictive mode, or have its model_submission widened without the owner's review.
+
+schema: sources.v1
+
+sources:
+  - id: arxiv-cs-cl
+    name: arXiv cs.CL
+    kind: rss
+    url: https://rss.arxiv.org/rss/cs.CL
+    role: primary
+    enabled: true
+    mode: feed_summary
+    polling_interval_minutes: 1440
+    rate_limit:
+      min_seconds_between_requests: 3
+      max_connections: 1
+    store:
+      metadata: true
+      feed_summary: true
+      body: false
+    model_submission: title_and_summary
+    retention_days:
+      metadata: null
+      feed_summary: null
+    excerpts_allowed: true
+    attribution: Link to the arXiv abstract page. Do not imply endorsement by arXiv.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://info.arxiv.org/help/api/tou.html
+        - https://info.arxiv.org/help/license/index.html
+        - https://info.arxiv.org/help/rss.html
+        - https://info.arxiv.org/help/robots.html
+      automated_access: explicit
+      restrictions:
+        - At most one request every three seconds, on a single connection.
+        - Do not store and serve e-print content (PDFs, source files).
+        - Do not represent the project as endorsed or supported by arXiv.
+      uncertainties:
+        - The terms do not mention AI tools. Sending abstracts to the model rests on the CC0 dedication of descriptive metadata, which the terms define as including abstracts.
+        - The RSS page calls the feeds "intended primarily for human consumption"; one request a day is within the stated limits.
+
+  - id: google-deepmind-blog
+    name: Google DeepMind blog
+    kind: rss
+    url: https://deepmind.google/blog/rss.xml
+    role: vendor
+    enabled: true
+    mode: metadata_only
+    polling_interval_minutes: 360
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: true
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: null
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the original post.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://policies.google.com/terms
+        - https://deepmind.google/robots.txt
+      automated_access: explicit
+      restrictions:
+        - Automated access is prohibited where machine-readable instructions such as robots.txt disallow it. robots.txt currently allows everything; re-check it when re-reviewing.
+        - Do not remove or alter Google branding or legal notices.
+      uncertainties:
+        - No licence for blog content is stated, so storing summaries and sending text to the model are not permitted here.
+        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - Google's service-specific terms and generative AI policy were not read.
+
+  - id: google-research-blog
+    name: Google Research blog
+    kind: rss
+    url: https://research.google/blog/rss/
+    role: vendor
+    enabled: true
+    mode: metadata_only
+    polling_interval_minutes: 360
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: true
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: null
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the original post.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://policies.google.com/terms
+        - https://research.google/robots.txt
+      automated_access: explicit
+      restrictions:
+        - Automated access is prohibited where machine-readable instructions such as robots.txt disallow it. robots.txt currently allows everything; re-check it when re-reviewing.
+        - Do not remove or alter Google branding or legal notices.
+      uncertainties:
+        - No licence for blog content is stated, so storing summaries and sending text to the model are not permitted here.
+        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - Google's service-specific terms and generative AI policy were not read.
+
+  - id: hugging-face-blog
+    name: Hugging Face blog
+    kind: rss
+    url: https://huggingface.co/blog/feed.xml
+    role: vendor
+    enabled: true
+    mode: metadata_only
+    polling_interval_minutes: 360
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: true
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: null
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the original post.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://huggingface.co/terms-of-service
+        - https://huggingface.co/content-policy
+        - https://huggingface.co/robots.txt
+      automated_access: interpretation
+      restrictions:
+        - The terms say proprietary materials may not be altered, reproduced or republished without written permission.
+        - The content policy prohibits excessive bulk activity.
+      uncertainties:
+        - The terms have no clause on automated reading. Access rests on the published feed and a robots.txt that allows everything.
+        - The blog mixes official and community posts and states no licence for either.
+        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+
+  - id: simon-willison-entries
+    name: Simon Willison's Weblog (long-form entries)
+    kind: atom
+    url: https://simonwillison.net/atom/entries/
+    role: independent
+    enabled: true
+    mode: metadata_only
+    polling_interval_minutes: 360
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: true
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: null
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the original post and name the author.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://simonwillison.net/about/
+        - https://simonwillison.net/robots.txt
+      automated_access: interpretation
+      restrictions:
+        - robots.txt disallows /admin/ and /search/ only.
+      uncertainties:
+        - No licence or terms of use are stated, so default copyright applies. The feed carries full post HTML, which is discarded.
+        - Access rests on the author offering Atom feeds for following the blog.
+        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - The author has not been asked for permission. Asking would settle most of this.
+
+  - id: hacker-news
+    name: Hacker News
+    kind: hn_api
+    url: https://hacker-news.firebaseio.com/v0/
+    role: community
+    enabled: true
+    mode: metadata_only
+    polling_interval_minutes: 180
+    rate_limit:
+      min_seconds_between_requests: 1
+      max_connections: 1
+    store:
+      metadata: true
+      feed_summary: false
+      body: false
+    # Item id, title, link, score, comment count and time. Not the submitter's username
+    # and not comment text.
+    stored_fields: [id, title, url, score, descendants, time, type]
+    model_submission: none
+    retention_days:
+      metadata: null
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the Hacker News item and to the linked page.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://github.com/HackerNews/API
+        - https://www.ycombinator.com/legal
+        - https://news.ycombinator.com/robots.txt
+      automated_access: interpretation
+      restrictions:
+        - Use the official API only. Do not scrape news.ycombinator.com pages.
+        - Pages linked from Hacker News on hosts outside this catalogue are not fetched.
+      uncertainties:
+        - The API README states no rate limit and no terms for the data. Its MIT licence covers the repository, not the data.
+        - Y Combinator's terms cover all its subdomains and reportedly prohibit scraping and data mining. That clause was read from a summary of a truncated page and has not been verified verbatim.
+        - Access rests on the API being Y Combinator's own published route.
+        - Whether sending item titles to the model is permitted is unresolved. Titles are not submitted.
+
+  - id: openai-news
+    name: OpenAI News
+    kind: rss
+    url: https://openai.com/news/rss.xml
+    role: vendor
+    enabled: false
+    mode: disabled
+    polling_interval_minutes: 360
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: false
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: 0
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the original post.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://openai.com/policies/terms-of-use/
+        - https://openai.com/robots.txt
+      automated_access: uncertain
+      restrictions:
+        - The terms define Services to include websites and prohibit automatically or programmatically extracting data.
+      uncertainties:
+        - The site publishes and links an RSS feed and its robots.txt allows everything, which conflicts with the wording of the terms. Disabled until the owner decides.
+        - OpenAI's Service Terms and content-attribution page were not read.
+
+  - id: mlflow-releases
+    name: MLflow releases
+    kind: atom
+    url: https://github.com/mlflow/mlflow/releases.atom
+    role: vendor
+    enabled: false
+    mode: disabled
+    polling_interval_minutes: 720
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: false
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: 0
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the release page.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://docs.github.com/en/site-policy/github-terms/github-terms-of-service
+        - https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies
+        - https://github.com/robots.txt
+        - https://github.com/mlflow/mlflow/blob/master/LICENSE.txt
+      automated_access: uncertain
+      restrictions:
+        - GitHub's robots.txt disallows Atom feed paths for generic agents.
+        - GitHub's acceptable-use policy lists research and archival as the permitted purposes for scraping.
+      uncertainties:
+        - GitHub's REST API is the sanctioned route, but it needs an adapter that is not approved.
+        - The repository is Apache-2.0; neither that licence nor GitHub's terms says release notes fall under it.
+
+  - id: anthropic-sdk-python-releases
+    name: Anthropic SDK releases
+    kind: atom
+    url: https://github.com/anthropics/anthropic-sdk-python/releases.atom
+    role: vendor
+    enabled: false
+    mode: disabled
+    polling_interval_minutes: 720
+    rate_limit:
+      min_seconds_between_requests: 10
+      max_connections: 1
+    store:
+      metadata: false
+      feed_summary: false
+      body: false
+    model_submission: none
+    retention_days:
+      metadata: 0
+      feed_summary: 0
+    excerpts_allowed: false
+    attribution: Link to the release page.
+    terms:
+      reviewed_on: 2026-11-21
+      approved_by_owner_on: 2026-11-21
+      urls:
+        - https://docs.github.com/en/site-policy/github-terms/github-terms-of-service
+        - https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies
+        - https://github.com/robots.txt
+        - https://github.com/anthropics/anthropic-sdk-python/blob/main/LICENSE
+      automated_access: uncertain
+      restrictions:
+        - GitHub's robots.txt disallows Atom feed paths for generic agents.
+        - GitHub's acceptable-use policy lists research and archival as the permitted purposes for scraping.
+      uncertainties:
+        - GitHub's REST API is the sanctioned route, but it needs an adapter that is not approved.
+        - The repository is Apache-2.0; neither that licence nor GitHub's terms says release notes fall under it.
+        - With this source disabled there is no direct coverage of Anthropic announcements.
