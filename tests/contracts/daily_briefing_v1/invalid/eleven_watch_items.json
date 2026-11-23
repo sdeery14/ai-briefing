@@ -1,0 +1,148 @@
+{
+  "schema_version": "daily_briefing.v1",
+  "briefing_id": "b-2026-11-19-1",
+  "local_date": "2026-11-19",
+  "timezone": "America/New_York",
+  "generated_at": "2026-11-19T11:15:00Z",
+  "status": "ready",
+  "degraded_reasons": [],
+  "stories": [
+    {
+      "item_id": "i1",
+      "story_id": "s-101",
+      "decision_id": "d-401",
+      "class": "major",
+      "confidence": "high",
+      "headline": "Example development 1",
+      "summary": "What happened, in two or three sentences. This text is synthetic.",
+      "why_it_matters": "A concise, evidence-based explanation written for the example.",
+      "independent_source_count": 2,
+      "evidence": [
+        {
+          "title": "Original announcement 1",
+          "url": "https://example.org/announcement-1",
+          "source_name": "Example Lab",
+          "source_role": "vendor"
+        },
+        {
+          "title": "Independent report 1",
+          "url": "https://example.com/report-1",
+          "source_name": "Example Review",
+          "source_role": "independent"
+        }
+      ]
+    },
+    {
+      "item_id": "i2",
+      "story_id": "s-102",
+      "decision_id": "d-402",
+      "class": "practical",
+      "confidence": "moderate",
+      "headline": "Example development 2",
+      "summary": "What happened, in two or three sentences. This text is synthetic.",
+      "why_it_matters": "A concise, evidence-based explanation written for the example.",
+      "independent_source_count": 2,
+      "evidence": [
+        {
+          "title": "Original announcement 2",
+          "url": "https://example.org/announcement-2",
+          "source_name": "Example Lab",
+          "source_role": "vendor"
+        },
+        {
+          "title": "Independent report 2",
+          "url": "https://example.com/report-2",
+          "source_name": "Example Review",
+          "source_role": "independent"
+        }
+      ]
+    },
+    {
+      "item_id": "i3",
+      "story_id": "s-103",
+      "decision_id": "d-403",
+      "class": "practical",
+      "confidence": "low",
+      "headline": "Example development 3",
+      "summary": "What happened, in two or three sentences. This text is synthetic.",
+      "why_it_matters": "A concise, evidence-based explanation written for the example.",
+      "independent_source_count": 2,
+      "evidence": [
+        {
+          "title": "Original announcement 3",
+          "url": "https://example.org/announcement-3",
+          "source_name": "Example Lab",
+          "source_role": "vendor"
+        },
+        {
+          "title": "Independent report 3",
+          "url": "https://example.com/report-3",
+          "source_name": "Example Review",
+          "source_role": "independent"
+        }
+      ]
+    }
+  ],
+  "watchlist": [
+    {
+      "item_id": "w1",
+      "headline": "Watch item 1",
+      "url": "https://example.net/w1"
+    },
+    {
+      "item_id": "w2",
+      "headline": "Watch item 2",
+      "url": "https://example.net/w2"
+    },
+    {
+      "item_id": "w3",
+      "headline": "Watch item 3",
+      "url": "https://example.net/w3"
+    },
+    {
+      "item_id": "w4",
+      "headline": "Watch item 4",
+      "url": "https://example.net/w4"
+    },
+    {
+      "item_id": "w5",
+      "headline": "Watch item 5",
+      "url": "https://example.net/w5"
+    },
+    {
+      "item_id": "w6",
+      "headline": "Watch item 6",
+      "url": "https://example.net/w6"
+    },
+    {
+      "item_id": "w7",
+      "headline": "Watch item 7",
+      "url": "https://example.net/w7"
+    },
+    {
+      "item_id": "w8",
+      "headline": "Watch item 8",
+      "url": "https://example.net/w8"
+    },
+    {
+      "item_id": "w9",
+      "headline": "Watch item 9",
+      "url": "https://example.net/w9"
+    },
+    {
+      "item_id": "w10",
+      "headline": "Watch item 10",
+      "url": "https://example.net/w10"
+    },
+    {
+      "item_id": "w11",
+      "headline": "Watch item 11",
+      "url": "https://example.net/w11"
+    }
+  ],
+  "concept_note": {
+    "title": "Example concept",
+    "body": "Short model-written background, tied to the first story. Synthetic.",
+    "related_item_id": "i1"
+  }
+}

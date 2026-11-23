@@ -1,5 +1,5 @@
-# The application package is src/ai_briefing (M1 issue 1.1). It has no runtime dependencies
-# yet; each later issue adds the ones it needs. Linting, type checking and tests cover the
+# The application package is src/ai_briefing (M1 issue 1.1). Each issue adds the runtime
+# dependencies it needs. Linting, type checking and tests cover the
 # package and the repository's own tooling (scripts/ and tests/).
 
 [build-system]
@@ -13,7 +13,10 @@ description = "Evidence-first AI intelligence and learning briefings."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "pydantic>=2.9",   # domain records (M1 issue 1.2)
+  "jsonschema>=4.23", # validates the briefing against schemas/ before it is exported
+]
 
 [project.scripts]
 ai-briefing = "ai_briefing.runtime.cli:main"
@@ -25,6 +28,7 @@ dev = [
   "pytest>=8.3",
   "pyyaml>=6.0", # tests read config/*.yaml; the application will need it from M1 issue 1.4
   "types-pyyaml>=6.0",
+  "types-jsonschema>=4.23",
 ]
 
 [tool.uv]

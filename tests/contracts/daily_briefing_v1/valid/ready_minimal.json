@@ -1,0 +1,37 @@
+{
+  "schema_version": "daily_briefing.v1",
+  "briefing_id": "b-2026-11-19-1",
+  "local_date": "2026-11-19",
+  "timezone": "America/New_York",
+  "generated_at": "2026-11-19T11:15:00Z",
+  "status": "ready",
+  "degraded_reasons": [],
+  "stories": [
+    {
+      "item_id": "i1",
+      "story_id": "s-101",
+      "decision_id": "d-401",
+      "class": "major",
+      "confidence": "high",
+      "headline": "Example development 1",
+      "summary": "What happened, in two or three sentences. This text is synthetic.",
+      "why_it_matters": "A concise, evidence-based explanation written for the example.",
+      "independent_source_count": 2,
+      "evidence": [
+        {
+          "title": "Original announcement 1",
+          "url": "https://example.org/announcement-1",
+          "source_name": "Example Lab",
+          "source_role": "vendor"
+        },
+        {
+          "title": "Independent report 1",
+          "url": "https://example.com/report-1",
+          "source_name": "Example Review",
+          "source_role": "independent"
+        }
+      ]
+    }
+  ],
+  "watchlist": []
+}
