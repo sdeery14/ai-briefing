@@ -111,7 +111,7 @@ sources:
         - Do not remove or alter Google branding or legal notices.
       uncertainties:
         - No licence for blog content is stated.
-        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
+        - "The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished."
         - Google's service-specific terms and generative AI policy were not read.
 
   - id: google-research-blog
@@ -152,7 +152,7 @@ sources:
         - Do not remove or alter Google branding or legal notices.
       uncertainties:
         - No licence for blog content is stated.
-        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
+        - "The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished."
         - Google's service-specific terms and generative AI policy were not read.
 
   - id: hugging-face-blog
@@ -230,7 +230,7 @@ sources:
       uncertainties:
         - No licence or terms of use are stated, so default copyright applies. The feed carries the full post, so no page is fetched.
         - Access rests on the author offering Atom feeds for following the blog.
-        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
+        - "The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished."
         - The author has not been asked for permission. Asking would settle most of this.
 
   - id: hacker-news
