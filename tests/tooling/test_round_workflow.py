@@ -1980,7 +1980,10 @@ OPEN_THREADS = {
 def test_a_pull_request_with_an_open_review_thread_is_never_merged(name: str) -> None:
     gh = FakeGh(files=PLAIN_FILES, threads=OPEN_THREADS[name]())
     assert round_outcome.status(gh, CONFIG, 12)["action"] != "merge"
-    with pytest.raises(round_outcome.MergeRefused):
+    # A P0 or an unreadable thread escalates; any other open thread is a plain refusal.
+    escalates = name in {"P0", "truncated thread"}
+    expected = round_outcome.EscalationRequired if escalates else round_outcome.MergeRefused
+    with pytest.raises(expected):
         round_outcome.merge(gh, CONFIG, 12)
     assert gh.mutations == []
 
@@ -2092,3 +2095,57 @@ def test_merging_is_decided_only_after_every_earlier_condition() -> None:
 
 def me_evaluate_plain() -> merge_eligibility.Result:
     return merge_eligibility.evaluate(["src/ai_briefing/sources/fetcher.py"])
+
+
+# --- ADR-013: a P0 found by the merge command's own check ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "late_threads",
+    [
+        [thread("TP0", body=P0_THREAD_BODY)],
+        [thread(page_info={"hasNextPage": True})],
+    ],
+    ids=["a P0 appears", "a thread becomes unreadable"],
+)
+def test_a_p0_that_appears_before_the_merge_escalates_and_is_not_a_plain_refusal(
+    late_threads: list[dict[str, Any]],
+) -> None:
+    clean = FakeGh(files=PLAIN_FILES)
+    assert round_outcome.status(clean, CONFIG, 12)["action"] == "merge"
+    late = FakeGh(files=PLAIN_FILES, threads=late_threads)
+    with pytest.raises(round_outcome.EscalationRequired, match="stop the round"):
+        round_outcome.merge(late, CONFIG, 12)
+    assert late.mutations == []
+
+
+def test_unreadable_threads_at_merge_time_escalate() -> None:
+    gh = FakeGh(files=PLAIN_FILES, fail_on=["threads"])
+    with pytest.raises(round_outcome.EscalationRequired):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_the_merge_command_tells_escalation_apart_from_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(round_outcome, "with_retries", lambda run: run)
+    p0 = FakeGh(files=PLAIN_FILES, threads=[thread("TP0", body=P0_THREAD_BODY)])
+    monkeypatch.setattr(round_outcome, "run_gh", p0)
+    assert round_outcome.main(["merge", "12"]) == 5
+    assert capsys.readouterr().err.startswith("escalate: ")
+    refused = FakeGh(files=PLAIN_FILES, threads=[thread()])
+    monkeypatch.setattr(round_outcome, "run_gh", refused)
+    assert round_outcome.main(["merge", "12"]) == 4
+    assert capsys.readouterr().err.startswith("refused: ")
+    assert p0.mutations == refused.mutations == []
+
+
+def test_the_skill_escalates_when_the_merge_command_does() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.strip().startswith("| `merge` |"))
+    assert "Exit 5" in row
+    assert "needs-human" in row
+    assert "end the round" in row
+    assert row.index("Exit 5") < row.index("Exit 4")
+    assert "Never retry by another route" in row

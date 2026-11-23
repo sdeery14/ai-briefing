@@ -23,7 +23,9 @@ Whenever ``stop_round`` is true the round ends, whatever the action says.
 
 ``merge`` is the only way the round merges anything (ADR-013). It reads the pull request
 again, refuses unless ``status`` would say ``merge`` at that moment, and then squash-merges
-the exact commit that was checked and reviewed. A pull request that touches an owner-only
+the exact commit that was checked and reviewed. Exit code 4 is a refusal: run ``status``
+again and follow it. Exit code 5 means the fresh check found a P0, or could not read the
+review threads: stop the round and tell the owner, exactly as for ``escalate``. A pull request that touches an owner-only
 path, carries the ``needs-human`` label, or is uncertain in any way is never merged by the
 round: it is labelled ``ready-for-owner`` and the notes say why. ``"automatic_merge"`` is
 true only on a result whose action is ``merge``.
@@ -425,8 +427,15 @@ def merge(gh: Gh, config: Config, number: int) -> str:
     branch has moved since.
     """
     result = status(gh, config, number)
-    if result.get("action") != "merge" or result.get("stop_round"):
-        why = "; ".join([*result.get("reasons", []), *result.get("notes", [])])
+    why = "; ".join([*result.get("reasons", []), *result.get("notes", [])])
+    if result.get("stop_round") or result.get("action") == "escalate":
+        # A P0, or threads that could not be read, found by this fresh check. That is not
+        # an ordinary refusal: the round stops and the owner is told.
+        raise EscalationRequired(
+            f"pull request {number} must be escalated, not merged: stop the round and "
+            f"tell the owner: {why}"
+        )
+    if result.get("action") != "merge":
         raise MergeRefused(
             f"pull request {number} is not eligible for the round to merge "
             f"(next step: {result.get('action')}): {why}"
@@ -473,7 +482,13 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(merge(run_gh, config, args.number) + "\n")
             return 0
         result = status(gh, config, args.number, timed_out=args.timed_out)
-    except (LimitReached, EscalationRequired, MergeRefused) as error:
+    except EscalationRequired as error:
+        if args.command == "merge":
+            sys.stderr.write(f"escalate: {error}\n")
+            return 5
+        sys.stderr.write(f"refused: {error}\n")
+        return 4
+    except (LimitReached, MergeRefused) as error:
         sys.stderr.write(f"refused: {error}\n")
         return 4
     except (GhError, ValueError, KeyError, TypeError) as error:

@@ -453,3 +453,38 @@ def test_the_summary_marks_owner_only_paths() -> None:
     assert "**Owner-only:** 1 changed file(s)" in summary
     assert "| `config/sources.yaml` | models-budget-sources | `config/**` | yes |" in summary
     assert "| `uv.lock` | dependencies | `uv.lock` | no |" in summary
+
+
+@pytest.mark.parametrize(
+    ("path", "first_protected_category"),
+    [
+        ("src/ai_briefing/prompts/Dockerfile", "prompts-and-editorial-policy"),
+        ("tests/golden/Dockerfile", "evaluation"),
+        ("tests/llm/recorded/compose.yml", "evaluation"),
+        ("schemas/docker-compose.yaml", "contracts-and-migrations"),
+        ("migrations/.dockerignore", "contracts-and-migrations"),
+        ("src/ai_briefing/editorial/policy/Dockerfile.dev", "prompts-and-editorial-policy"),
+    ],
+)
+def test_a_path_under_two_protected_patterns_is_owner_only_if_either_is(
+    path: str, first_protected_category: str
+) -> None:
+    # The first protected pattern a path matches may be one the round can merge. The
+    # owner-only check must not stop there.
+    result = me.evaluate([path])
+    assert [m.category for m in result.protected] == [first_protected_category]
+    assert [(m.path, m.category) for m in result.owner_only] == [(path, "deployment")]
+    assert result.agent_may_merge is False
+    row = next(line for line in me.summary_markdown(result).splitlines() if path in line)
+    assert row.endswith("| yes |")
+
+
+def test_every_path_is_checked_against_every_owner_only_pattern() -> None:
+    for _, patterns in me.OWNER_ONLY:
+        for pattern in patterns:
+            example = pattern.replace("**/", "nested/dir/").replace("/**", "/x/y.txt")
+            example = example.replace("*", "")
+            assert me.match_owner_only(example) is not None, pattern
+            assert me.evaluate([example]).agent_may_merge is False, pattern
+    assert me.match_owner_only("src/ai_briefing/sources/fetcher.py") is None
+    assert me.match_owner_only("uv.lock") is None

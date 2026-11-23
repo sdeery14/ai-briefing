@@ -189,9 +189,26 @@ def match_path(path: str) -> Match | None:
     return None
 
 
-def owner_only_matches(protected: Sequence[Match]) -> tuple[Match, ...]:
-    """The protected matches that fall on an ADR-013 owner-only path."""
-    return tuple(m for m in protected if m.pattern in OWNER_ONLY_PATTERNS)
+_OWNER_ONLY_COMPILED: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
+    (category, pattern, pattern_to_regex(pattern))
+    for category, patterns in OWNER_ONLY
+    for pattern in patterns
+)
+
+
+def match_owner_only(path: str) -> Match | None:
+    """The first ADR-013 owner-only pattern the path falls under, if any.
+
+    Checked against the owner-only patterns directly, not through :func:`match_path`: a
+    path can fall under two protected patterns, and the first one found there need not be
+    the owner-only one (``src/ai_briefing/prompts/Dockerfile`` is a prompt path and a
+    container file).
+    """
+    candidate = normalise(path)
+    for category, pattern, regex in _OWNER_ONLY_COMPILED:
+        if regex.fullmatch(candidate):
+            return Match(path=path, category=category, pattern=pattern)
+    return None
 
 
 def evaluate(
@@ -215,7 +232,7 @@ def evaluate(
     if protected:
         reasons.append(f"{len(protected)} changed file(s) are on protected paths")
     categories = tuple(sorted({m.category for m in protected}))
-    owner_only = owner_only_matches(protected)
+    owner_only = tuple(m for m in (match_owner_only(p) for p in unique) if m is not None)
     # The round may merge only when the list is known to be complete and non-empty and no
     # owner-only path is in it. Other protected paths do not prevent it (ADR-013).
     uncertain = [r for r in reasons if "protected paths" not in r]
@@ -338,8 +355,9 @@ def summary_markdown(result: Result, *, limit: int = 50) -> str:
             "| Protected path touched | Category | Rule | Owner-only |",
             "|---|---|---|---|",
         ]
+        owner_only_paths = {m.path for m in result.owner_only}
         for match in result.protected[:limit]:
-            owner = "yes" if match.pattern in OWNER_ONLY_PATTERNS else "no"
+            owner = "yes" if match.path in owner_only_paths else "no"
             lines.append(
                 f"| `{_shown(match.path)}` | {match.category} | `{match.pattern}` | {owner} |"
             )

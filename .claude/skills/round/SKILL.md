@@ -123,7 +123,7 @@ leaves out the issue text and the owner's comments, so do not work from it.
    | `wait` | Run `pr_wait.py` again. |
    | `fix` | Start a fix round (below). |
    | `resolve-conflicts` | `git fetch origin && git merge origin/main`, resolve, run the local checks, push. Never force-push. Comment `@codex review`. Not a fix round. Wait again. |
-   | `merge` | Run `uv run python scripts/round_outcome.py merge <pr>`. If it merges, go to step 8. If it refuses or fails, do not retry by another route: label the pull request `ready-for-owner`, comment what the command said, and go to the next issue. |
+   | `merge` | Run `uv run python scripts/round_outcome.py merge <pr>`. It checks everything again before it merges. **Exit 0:** merged; go to step 8. **Exit 5 (`escalate:`):** the fresh check found a P0, or could not read the review threads. Do the `escalate` row: label `needs-human`, tell the owner, end the round. **Exit 4 (`refused:`):** something changed since `status`. Run `status` again and do what it says now. **Any other failure, or a second refusal while `status` still says `merge`:** label the pull request `ready-for-owner`, comment what the command said, and go to the next issue. Never retry by another route. |
    | `label` | Apply the `outcome` label to the pull request, comment the reasons and notes, and go to the next issue. |
    | `none` | The pull request is closed. Go to the next issue. |
 
