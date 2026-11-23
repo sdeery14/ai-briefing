@@ -6,13 +6,20 @@ The guiding idea: **signal over hype, evidence over virality, cumulative learnin
 
 ## Status
 
-**Pre-development. No application functionality has been implemented, and there is nothing to install or run yet.**
+**Early development. The package installs and has a command line, but no briefing functionality has been implemented yet.**
 
 - The architecture was approved on 2026-11-21: [RFC v0.3](docs/rfc/AI-Briefing-RFC-v0.3.md) and eleven accepted [architecture decision records](docs/adr/README.md).
-- Work is at milestone M0: licence, contributor and agent instructions, CI and repository safeguards. See the [milestone plan](docs/planning/milestones.md).
-- The first working briefing is the goal of milestone M1.
+- Milestone M0 (licence, contributor and agent instructions, CI and repository safeguards) is complete. See the [milestone plan](docs/planning/milestones.md).
+- Work is at milestone M1, whose goal is the first working briefing. So far only the package skeleton exists.
 
-This README will gain installation and usage instructions when there is something that works.
+With [uv](https://docs.astral.sh/uv/) installed, this shows the command line, which has no subcommands yet:
+
+```sh
+uv sync --locked --group dev
+uv run ai-briefing --help
+```
+
+This README will gain usage instructions when there is something that works.
 
 ## What it is meant to do
 

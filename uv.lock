@@ -12,7 +12,7 @@ exclude-newer = "2026-11-07T00:00:00Z"
 [[package]]
 name = "ai-briefing"
 version = "0.0.0"
-source = { virtual = "." }
+source = { editable = "." }
 
 [package.dev-dependencies]
 dev = [

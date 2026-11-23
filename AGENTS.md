@@ -8,7 +8,7 @@ These instructions apply to every coding agent and reviewer working in this repo
 
 ## Current state
 
-**No application code exists yet.** There is no application package and there are no application tests. What exists is documentation and development tooling: CI that lints, type-checks and tests the repository's own scripts, an offline guard for tests, a secret scan, and a merge-eligibility report. The ruleset on `main` and Codex review are configured by the owner and may not be in place yet; see [repository safeguards](docs/operations/repository-safeguards.md).
+**The application package exists but does nothing yet.** `src/ai_briefing` holds the empty module packages from RFC §3.3 and an `ai-briefing` command that offers only `--help` and `--version` (M1 issue 1.1). No collection, storage, model call or briefing is implemented; each arrives with its own M1 issue. Alongside it is the development tooling: CI that lints, type-checks and tests the package and the repository's own scripts, an offline guard for tests, a secret scan, and a merge-eligibility report. The ruleset on `main` and Codex review are configured by the owner and may not be in place yet; see [repository safeguards](docs/operations/repository-safeguards.md).
 
 Where this file describes tooling, it says whether the tooling exists. Do not report a command as run, or a check as passed, unless it exists and you ran it.
 
@@ -117,7 +117,7 @@ Do not edit a protected path as a side effect of other work. If an issue seems t
 
 ## Commands
 
-These work today and are what CI runs. They cover the development tooling in `scripts/` and `tests/` only; there is no application code for them to check yet, and there are no application commands.
+These work today and are what CI runs. They cover the package in `src/` and the development tooling in `scripts/` and `tests/`.
 
 ```sh
 uv sync --locked --group dev
@@ -125,7 +125,10 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 uv run pytest
+uv run ai-briefing --help
 ```
+
+`uv sync` installs the package into the project environment, which is what provides the `ai-briefing` command. It has no subcommands yet.
 
 Tests run with the offline guard on: any network access other than loopback raises `NetworkAccessBlocked`. CI pins `uv` 0.9.9; use the same version when changing `uv.lock`.
 
