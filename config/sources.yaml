@@ -2,7 +2,9 @@
 #
 # Protected path: any change here needs the owner's review (ADR-011).
 #
-# Operating modes were approved by the owner on 2026-11-21 for personal, non-commercial use.
+# Operating modes were approved by the owner on 2026-11-21 for personal, non-commercial use,
+# and widened by the owner on 2026-11-23 to allow private full-text reading of three sources
+# under ADR-012. Their terms are silent on that use; the records say so.
 # The reasoning, quotations and links behind each record are in
 # docs/operations/source-terms-records.md. This is an operating policy, not legal advice.
 #
@@ -12,15 +14,23 @@
 #                            explicit | interpretation | uncertain
 #   store.*                  what may be kept in the database
 #   model_submission         what may be sent to the model provider
-#                            none | title_and_summary
+#                            none | metadata | title_and_summary | full_text
 #
 # Modes:
+#   full_text       metadata plus the article text, kept privately for body retention days
 #   feed_summary    metadata plus the summary the source's own feed supplies
 #   metadata_only   title, link, dates and identifiers only; feed summaries are discarded
 #   disabled        nothing is fetched
 #
-# No source is approved for fetching article bodies. No source may be enabled, moved to a
-# less restrictive mode, or have its model_submission widened without the owner's review.
+# For a full_text source:
+#   body.source     feed: the feed itself carries the article text; no page is fetched
+#                   page: the article page is fetched, and only from a host in body.hosts
+#   body.hosts      an item whose link is on any other host stays metadata-only
+#   retention_days.body   the text is purged after this many days; its hash is kept
+#   excerpt_limit_chars   the longest quotation a briefing may show from one article
+#
+# No source may be enabled, moved to a less restrictive mode, or have its model_submission
+# widened without the owner's review. Article text never enters the repository.
 
 schema: sources.v1
 
@@ -69,7 +79,7 @@ sources:
     url: https://deepmind.google/blog/rss.xml
     role: vendor
     enabled: true
-    mode: metadata_only
+    mode: full_text
     polling_interval_minutes: 360
     rate_limit:
       min_seconds_between_requests: 10
@@ -77,16 +87,21 @@ sources:
     store:
       metadata: true
       feed_summary: false
-      body: false
-    model_submission: none
+      body: true
+    body:
+      source: page
+      hosts: [deepmind.google]
+    model_submission: full_text
     retention_days:
       metadata: null
       feed_summary: 0
-    excerpts_allowed: false
+      body: 90
+    excerpts_allowed: true
+    excerpt_limit_chars: 300
     attribution: Link to the original post.
     terms:
       reviewed_on: 2026-11-21
-      approved_by_owner_on: 2026-11-21
+      approved_by_owner_on: 2026-11-23
       urls:
         - https://policies.google.com/terms
         - https://deepmind.google/robots.txt
@@ -95,8 +110,8 @@ sources:
         - Automated access is prohibited where machine-readable instructions such as robots.txt disallow it. robots.txt currently allows everything; re-check it when re-reviewing.
         - Do not remove or alter Google branding or legal notices.
       uncertainties:
-        - No licence for blog content is stated, so storing summaries and sending text to the model are not permitted here.
-        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - No licence for blog content is stated.
+        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
         - Google's service-specific terms and generative AI policy were not read.
 
   - id: google-research-blog
@@ -105,7 +120,7 @@ sources:
     url: https://research.google/blog/rss/
     role: vendor
     enabled: true
-    mode: metadata_only
+    mode: full_text
     polling_interval_minutes: 360
     rate_limit:
       min_seconds_between_requests: 10
@@ -113,16 +128,21 @@ sources:
     store:
       metadata: true
       feed_summary: false
-      body: false
-    model_submission: none
+      body: true
+    body:
+      source: page
+      hosts: [research.google]
+    model_submission: full_text
     retention_days:
       metadata: null
       feed_summary: 0
-    excerpts_allowed: false
+      body: 90
+    excerpts_allowed: true
+    excerpt_limit_chars: 300
     attribution: Link to the original post.
     terms:
       reviewed_on: 2026-11-21
-      approved_by_owner_on: 2026-11-21
+      approved_by_owner_on: 2026-11-23
       urls:
         - https://policies.google.com/terms
         - https://research.google/robots.txt
@@ -131,8 +151,8 @@ sources:
         - Automated access is prohibited where machine-readable instructions such as robots.txt disallow it. robots.txt currently allows everything; re-check it when re-reviewing.
         - Do not remove or alter Google branding or legal notices.
       uncertainties:
-        - No licence for blog content is stated, so storing summaries and sending text to the model are not permitted here.
-        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - No licence for blog content is stated.
+        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
         - Google's service-specific terms and generative AI policy were not read.
 
   - id: hugging-face-blog
@@ -150,7 +170,7 @@ sources:
       metadata: true
       feed_summary: false
       body: false
-    model_submission: none
+    model_submission: metadata
     retention_days:
       metadata: null
       feed_summary: 0
@@ -158,19 +178,19 @@ sources:
     attribution: Link to the original post.
     terms:
       reviewed_on: 2026-11-21
-      approved_by_owner_on: 2026-11-21
+      approved_by_owner_on: 2026-11-23
       urls:
         - https://huggingface.co/terms-of-service
         - https://huggingface.co/content-policy
         - https://huggingface.co/robots.txt
       automated_access: interpretation
       restrictions:
-        - The terms say proprietary materials may not be altered, reproduced or republished without written permission.
+        - The terms say proprietary materials may not be altered, reproduced or republished without written permission. Under ADR-012 that is an express refusal of copying, so article text is neither stored nor sent to the model.
         - The content policy prohibits excessive bulk activity.
       uncertainties:
         - The terms have no clause on automated reading. Access rests on the published feed and a robots.txt that allows everything.
-        - The blog mixes official and community posts and states no licence for either.
-        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - The blog mixes official and community posts and states no licence for either. An individual post may carry its own licence; none was checked.
+        - The owner approved sending the stored metadata (title, link, date) to the model on 2026-11-23.
 
   - id: simon-willison-entries
     name: Simon Willison's Weblog (long-form entries)
@@ -178,7 +198,7 @@ sources:
     url: https://simonwillison.net/atom/entries/
     role: independent
     enabled: true
-    mode: metadata_only
+    mode: full_text
     polling_interval_minutes: 360
     rate_limit:
       min_seconds_between_requests: 10
@@ -186,16 +206,21 @@ sources:
     store:
       metadata: true
       feed_summary: false
-      body: false
-    model_submission: none
+      body: true
+    body:
+      source: feed
+      hosts: [simonwillison.net]
+    model_submission: full_text
     retention_days:
       metadata: null
       feed_summary: 0
-    excerpts_allowed: false
+      body: 90
+    excerpts_allowed: true
+    excerpt_limit_chars: 300
     attribution: Link to the original post and name the author.
     terms:
       reviewed_on: 2026-11-21
-      approved_by_owner_on: 2026-11-21
+      approved_by_owner_on: 2026-11-23
       urls:
         - https://simonwillison.net/about/
         - https://simonwillison.net/robots.txt
@@ -203,9 +228,9 @@ sources:
       restrictions:
         - robots.txt disallows /admin/ and /search/ only.
       uncertainties:
-        - No licence or terms of use are stated, so default copyright applies. The feed carries full post HTML, which is discarded.
+        - No licence or terms of use are stated, so default copyright applies. The feed carries the full post, so no page is fetched.
         - Access rests on the author offering Atom feeds for following the blog.
-        - Whether sending post titles to the model is permitted is unresolved. Titles are not submitted.
+        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
         - The author has not been asked for permission. Asking would settle most of this.
 
   - id: hacker-news
@@ -226,7 +251,7 @@ sources:
     # Item id, title, link, score, comment count and time. Not the submitter's username
     # and not comment text.
     stored_fields: [id, title, url, score, descendants, time, type]
-    model_submission: none
+    model_submission: metadata
     retention_days:
       metadata: null
       feed_summary: 0
@@ -234,7 +259,7 @@ sources:
     attribution: Link to the Hacker News item and to the linked page.
     terms:
       reviewed_on: 2026-11-21
-      approved_by_owner_on: 2026-11-21
+      approved_by_owner_on: 2026-11-23
       urls:
         - https://github.com/HackerNews/API
         - https://www.ycombinator.com/legal
@@ -247,7 +272,7 @@ sources:
         - The API README states no rate limit and no terms for the data. Its MIT licence covers the repository, not the data.
         - Y Combinator's terms cover all its subdomains and reportedly prohibit scraping and data mining. That clause was read from a summary of a truncated page and has not been verified verbatim.
         - Access rests on the API being Y Combinator's own published route.
-        - Whether sending item titles to the model is permitted is unresolved. Titles are not submitted.
+        - Item titles are written by users and often copy a third-party headline. The owner approved sending the stored fields (title, link, score) to the model on 2026-11-23.
 
   - id: openai-news
     name: OpenAI News
