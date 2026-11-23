@@ -1,8 +1,9 @@
 """config/sources.yaml and config/models.yaml obey ADR-010, ADR-009 and the owner's approvals.
 
 These are checks on committed configuration, not on application code. They pin the
-operating modes the owner approved on 2026-11-21, so that enabling a source, loosening a
-mode or widening what may be sent to the model fails a test and cannot ride in unnoticed.
+operating modes the owner approved on 2026-11-21 and widened on 2026-11-23, so that enabling
+a source, loosening a mode or widening what may be sent to the model fails a test and cannot
+ride in unnoticed.
 """
 
 from __future__ import annotations
@@ -19,23 +20,43 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCES_PATH = REPO_ROOT / "config" / "sources.yaml"
 MODELS_PATH = REPO_ROOT / "config" / "models.yaml"
 
-# The owner's decision of 2026-11-21. Changing this table is changing that decision.
+# The owner's decisions of 2026-11-21 and 2026-11-23. Changing these tables is changing
+# those decisions.
 APPROVED_MODES = {
     "arxiv-cs-cl": "feed_summary",
-    "google-deepmind-blog": "metadata_only",
-    "google-research-blog": "metadata_only",
+    "google-deepmind-blog": "full_text",
+    "google-research-blog": "full_text",
     "hugging-face-blog": "metadata_only",
-    "simon-willison-entries": "metadata_only",
+    "simon-willison-entries": "full_text",
     "hacker-news": "metadata_only",
     "openai-news": "disabled",
     "mlflow-releases": "disabled",
     "anthropic-sdk-python-releases": "disabled",
 }
-MODES = {"feed_summary", "metadata_only", "disabled"}
+APPROVED_SUBMISSION = {
+    "arxiv-cs-cl": "title_and_summary",
+    "google-deepmind-blog": "full_text",
+    "google-research-blog": "full_text",
+    "hugging-face-blog": "metadata",
+    "simon-willison-entries": "full_text",
+    "hacker-news": "metadata",
+    "openai-news": "none",
+    "mlflow-releases": "none",
+    "anthropic-sdk-python-releases": "none",
+}
+# Where the article text comes from, and the only hosts a page may be fetched from.
+APPROVED_BODIES = {
+    "google-deepmind-blog": ("page", ["deepmind.google"]),
+    "google-research-blog": ("page", ["research.google"]),
+    "simon-willison-entries": ("feed", ["simonwillison.net"]),
+}
+MAX_BODY_RETENTION_DAYS = 90  # ADR-010
+MAX_EXCERPT_CHARS = 300
+MODES = {"full_text", "feed_summary", "metadata_only", "disabled"}
 KINDS = {"rss", "atom", "hn_api"}  # the adapters planned for M1; no others are approved
 ROLES = {"primary", "vendor", "independent", "community", "aggregator"}
 ACCESS = {"explicit", "interpretation", "uncertain"}
-SUBMISSION = {"none", "title_and_summary"}
+SUBMISSION = {"none", "metadata", "title_and_summary", "full_text"}
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -57,6 +78,10 @@ def test_the_catalogue_is_exactly_the_approved_selection_in_the_approved_modes()
     assert load(SOURCES_PATH)["schema"] == "sources.v1"
     assert len(SOURCES) == len(BY_ID), "source ids must be unique"
     assert {s["id"]: s["mode"] for s in SOURCES} == APPROVED_MODES
+
+
+def test_what_may_be_sent_to_the_model_is_exactly_what_was_approved() -> None:
+    assert {s["id"]: s["model_submission"] for s in SOURCES} == APPROVED_SUBMISSION
 
 
 @each_source
@@ -122,11 +147,32 @@ def test_a_source_with_uncertain_automated_access_is_disabled(source: dict[str, 
         assert source["terms"]["automated_access"] in {"explicit", "interpretation"}
 
 
+def test_article_text_is_stored_only_for_the_approved_full_text_sources() -> None:
+    storing = {s["id"] for s in SOURCES if s["store"]["body"]}
+    assert storing == set(APPROVED_BODIES)
+    assert {s["id"] for s in SOURCES if s["mode"] == "full_text"} == set(APPROVED_BODIES)
+    assert {s["id"] for s in SOURCES if "body" in s} == set(APPROVED_BODIES)
+
+
 @each_source
-def test_no_source_fetches_or_stores_article_bodies(source: dict[str, Any]) -> None:
-    assert source["store"]["body"] is False
-    assert "fetch_body" not in source or source["fetch_body"] is False
-    assert source["mode"] != "body_enabled"
+def test_a_full_text_source_is_private_bounded_and_confined_to_its_own_host(
+    source: dict[str, Any],
+) -> None:
+    if source["mode"] != "full_text":
+        assert source["store"]["body"] is False
+        assert source["model_submission"] != "full_text"
+        assert "body" not in source["retention_days"]
+        return
+    body_source, hosts = APPROVED_BODIES[source["id"]]
+    assert source["body"] == {"source": body_source, "hosts": hosts}
+    # The feed itself must be on an approved host, so a page fetch never leaves the source.
+    assert source["url"].split("/")[2] in hosts
+    assert source["store"] == {"metadata": True, "feed_summary": False, "body": True}
+    assert source["model_submission"] == "full_text"
+    assert 1 <= source["retention_days"]["body"] <= MAX_BODY_RETENTION_DAYS
+    assert source["excerpts_allowed"] is True
+    assert 1 <= source["excerpt_limit_chars"] <= MAX_EXCERPT_CHARS
+    assert source["terms"]["automated_access"] in {"explicit", "interpretation"}
 
 
 @each_source
@@ -139,7 +185,7 @@ def test_a_disabled_source_stores_and_submits_nothing(source: dict[str, Any]) ->
 
 
 @each_source
-def test_a_metadata_only_source_keeps_no_summary_and_submits_nothing(
+def test_a_metadata_only_source_keeps_no_summary_and_submits_at_most_its_metadata(
     source: dict[str, Any],
 ) -> None:
     if source["mode"] != "metadata_only":
@@ -147,15 +193,23 @@ def test_a_metadata_only_source_keeps_no_summary_and_submits_nothing(
     assert source["store"] == {"metadata": True, "feed_summary": False, "body": False}
     assert source["retention_days"]["feed_summary"] == 0
     assert source["excerpts_allowed"] is False
-    # Access, storage and model submission are separate permissions. Where the right to
-    # submit is unresolved, nothing is submitted, not even titles.
-    assert source["model_submission"] == "none"
+    # Access, storage and model submission are separate permissions: nothing beyond the
+    # stored metadata can be submitted, because nothing else is kept.
+    assert source["model_submission"] in {"none", "metadata"}
 
 
-def test_only_arxiv_may_be_sent_to_the_model_and_on_an_explicit_basis() -> None:
-    submitting = [s["id"] for s in SOURCES if s["model_submission"] != "none"]
-    assert submitting == ["arxiv-cs-cl"]
+def test_hugging_face_is_not_copied_because_its_terms_refuse_reproduction() -> None:
+    # ADR-012: an express prohibition on copying wins over the owner's preference.
+    hugging_face = BY_ID["hugging-face-blog"]
+    assert any("reproduced" in r for r in hugging_face["terms"]["restrictions"])
+    assert hugging_face["mode"] == "metadata_only"
+    assert hugging_face["store"]["body"] is False
+    assert hugging_face["model_submission"] == "metadata"
+
+
+def test_arxiv_sends_titles_and_abstracts_on_an_explicit_basis() -> None:
     arxiv = BY_ID["arxiv-cs-cl"]
+    assert arxiv["model_submission"] == "title_and_summary"
     assert arxiv["terms"]["automated_access"] == "explicit"
     assert arxiv["store"] == {"metadata": True, "feed_summary": True, "body": False}
     assert arxiv["url"] == "https://rss.arxiv.org/rss/cs.CL"
