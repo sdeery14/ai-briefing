@@ -3,7 +3,7 @@
 # Protected path: any change here needs the owner's review (ADR-011).
 #
 # Operating modes were approved by the owner on 2026-11-21 for personal, non-commercial use,
-# and widened by the owner on 2026-11-23 to allow private full-text reading of four sources
+# and widened by the owner on 2026-11-23 to allow private full-text reading of three sources
 # under ADR-012. Their terms are silent on that use; the records say so.
 # The reasoning, quotations and links behind each record are in
 # docs/operations/source-terms-records.md. This is an operating policy, not legal advice.
@@ -161,7 +161,7 @@ sources:
     url: https://huggingface.co/blog/feed.xml
     role: vendor
     enabled: true
-    mode: full_text
+    mode: metadata_only
     polling_interval_minutes: 360
     rate_limit:
       min_seconds_between_requests: 10
@@ -169,17 +169,12 @@ sources:
     store:
       metadata: true
       feed_summary: false
-      body: true
-    body:
-      source: page
-      hosts: [huggingface.co]
-    model_submission: full_text
+      body: false
+    model_submission: metadata
     retention_days:
       metadata: null
       feed_summary: 0
-      body: 90
-    excerpts_allowed: true
-    excerpt_limit_chars: 300
+    excerpts_allowed: false
     attribution: Link to the original post.
     terms:
       reviewed_on: 2026-11-21
@@ -190,12 +185,12 @@ sources:
         - https://huggingface.co/robots.txt
       automated_access: interpretation
       restrictions:
-        - The terms say proprietary materials may not be altered, reproduced or republished without written permission.
+        - The terms say proprietary materials may not be altered, reproduced or republished without written permission. Under ADR-012 that is an express refusal of copying, so article text is neither stored nor sent to the model.
         - The content policy prohibits excessive bulk activity.
       uncertainties:
         - The terms have no clause on automated reading. Access rests on the published feed and a robots.txt that allows everything.
-        - The blog mixes official and community posts and states no licence for either.
-        - The terms do not expressly grant the right to keep article text or send it to a model. The owner approved private full-text reading on 2026-11-23 on this basis: the terms do not prohibit it, robots.txt allows it, the text is kept privately for 90 days and is never republished.
+        - The blog mixes official and community posts and states no licence for either. An individual post may carry its own licence; none was checked.
+        - The owner approved sending the stored metadata (title, link, date) to the model on 2026-11-23.
 
   - id: simon-willison-entries
     name: Simon Willison's Weblog (long-form entries)

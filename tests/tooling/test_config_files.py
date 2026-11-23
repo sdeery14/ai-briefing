@@ -26,7 +26,7 @@ APPROVED_MODES = {
     "arxiv-cs-cl": "feed_summary",
     "google-deepmind-blog": "full_text",
     "google-research-blog": "full_text",
-    "hugging-face-blog": "full_text",
+    "hugging-face-blog": "metadata_only",
     "simon-willison-entries": "full_text",
     "hacker-news": "metadata_only",
     "openai-news": "disabled",
@@ -37,7 +37,7 @@ APPROVED_SUBMISSION = {
     "arxiv-cs-cl": "title_and_summary",
     "google-deepmind-blog": "full_text",
     "google-research-blog": "full_text",
-    "hugging-face-blog": "full_text",
+    "hugging-face-blog": "metadata",
     "simon-willison-entries": "full_text",
     "hacker-news": "metadata",
     "openai-news": "none",
@@ -48,7 +48,6 @@ APPROVED_SUBMISSION = {
 APPROVED_BODIES = {
     "google-deepmind-blog": ("page", ["deepmind.google"]),
     "google-research-blog": ("page", ["research.google"]),
-    "hugging-face-blog": ("page", ["huggingface.co"]),
     "simon-willison-entries": ("feed", ["simonwillison.net"]),
 }
 MAX_BODY_RETENTION_DAYS = 90  # ADR-010
@@ -197,6 +196,15 @@ def test_a_metadata_only_source_keeps_no_summary_and_submits_at_most_its_metadat
     # Access, storage and model submission are separate permissions: nothing beyond the
     # stored metadata can be submitted, because nothing else is kept.
     assert source["model_submission"] in {"none", "metadata"}
+
+
+def test_hugging_face_is_not_copied_because_its_terms_refuse_reproduction() -> None:
+    # ADR-012: an express prohibition on copying wins over the owner's preference.
+    hugging_face = BY_ID["hugging-face-blog"]
+    assert any("reproduced" in r for r in hugging_face["terms"]["restrictions"])
+    assert hugging_face["mode"] == "metadata_only"
+    assert hugging_face["store"]["body"] is False
+    assert hugging_face["model_submission"] == "metadata"
 
 
 def test_arxiv_sends_titles_and_abstracts_on_an_explicit_basis() -> None:

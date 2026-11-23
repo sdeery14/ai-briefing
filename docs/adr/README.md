@@ -1,6 +1,6 @@
 # AI Briefing architecture decision records
 
-Records 001 to 011 were **accepted by the owner on 2026-11-21**. Record 012 is proposed and awaits the owner's acceptance. A change to an accepted ADR is made by a new ADR that supersedes or amends it.
+Records 001 to 011 were **accepted by the owner on 2026-11-21**. Record 012 was accepted by the owner on 2026-11-23. A change to an accepted ADR is made by a new ADR that supersedes or amends it.
 
 These records accompany [RFC v0.3](../rfc/AI-Briefing-RFC-v0.3.md). They were revised after the independent review of packet v0.2; see [`docs/reviews/v0.3-reconciliation.md`](../reviews/v0.3-reconciliation.md).
 
@@ -17,6 +17,6 @@ These records accompany [RFC v0.3](../rfc/AI-Briefing-RFC-v0.3.md). They were re
 | [009](009-orchestration-and-observability.md) | Plain Python, one provider, narrow observability | Accepted | Tracing narrowed; budget; evaluation moved to 007 |
 | [010](010-content-rights-and-retention.md) | Content rights and retention | Accepted | New |
 | [011](011-development-workflow-and-merge-authority.md) | Development workflow and merge authority | Accepted | New |
-| [012](012-private-full-text-reading.md) | Private full-text reading where terms are silent; amends one sentence of ADR-010 | Proposed | Added 2026-11-23, after v0.3 |
+| [012](012-private-full-text-reading.md) | Private full-text reading where terms are silent; amends one sentence of ADR-010 | Accepted | Added 2026-11-23, after v0.3 |
 
 Each record has the same sections: context, decision, alternatives considered, consequences, acceptance checks, revisit when.

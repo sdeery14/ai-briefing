@@ -1,6 +1,6 @@
 # ADR 012 — Private full-text reading where terms are silent
 
-**Status:** Proposed (2026-11-23). Awaiting the owner's acceptance.
+**Status:** Accepted (owner, 2026-11-23)
 **Date:** 2026-11-23
 **Amends:** [ADR-010](010-content-rights-and-retention.md), one sentence under "Per-source record". Everything else in ADR-010 stands.
 

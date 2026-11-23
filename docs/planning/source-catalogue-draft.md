@@ -13,7 +13,8 @@ The terms of all nine sources have now been reviewed and the owner has approved 
 | Source | Mode |
 |---|---|
 | arXiv `cs.CL` | Feed-summary: metadata and abstracts |
-| Google DeepMind blog, Google Research blog, Hugging Face blog | Full text, kept privately for 90 days (widened from metadata-only on 2026-11-23) |
+| Google DeepMind blog, Google Research blog | Full text, kept privately for 90 days (widened from metadata-only on 2026-11-23) |
+| Hugging Face blog | Metadata-only; title and link may be sent to the model (from 2026-11-23). Its terms refuse reproduction, so it is not read in full |
 | Simon Willison's Weblog | Full text from the long-form feed `https://simonwillison.net/atom/entries/`, kept privately for 90 days (widened on 2026-11-23) |
 | Hacker News | Metadata-only, through the official API; title, link and score may be sent to the model (from 2026-11-23) |
 | OpenAI News, MLflow releases, Anthropic SDK releases | Disabled |

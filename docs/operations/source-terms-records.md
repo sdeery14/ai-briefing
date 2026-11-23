@@ -4,7 +4,7 @@ The terms record for each of the nine sources in the initial selection, as requi
 
 - **Reviewed:** 2026-11-21, from public terms and policy pages only. No source content was collected for this review.
 - **Approved by the owner:** 2026-11-21, for personal, non-commercial use.
-- **Widened by the owner:** 2026-11-23. Four sources may be read in full, and Hacker News metadata may be sent to the model. See "The decision of 2026-11-23".
+- **Widened by the owner:** 2026-11-23. Three sources may be read in full, and the metadata of Hugging Face and Hacker News items may be sent to the model. See "The decision of 2026-11-23".
 - **This is an operating policy, not legal advice.**
 
 ## How to read a record
@@ -38,9 +38,11 @@ No source's terms expressly grant the right to keep article text or to send it t
 5. Briefings show short attributed quotations and a link, never a reproduced article.
 6. Use is personal and non-commercial.
 
-The owner took that decision for the four sources below on 2026-11-23. Their terms remain silent or unclear on this use. The decision does not turn that silence into permission; it is a judgement taken under uncertainty, and an operating policy, not legal advice. The terms pages are as they were on 2026-11-21. Anyone else who runs this project makes that judgement for themselves.
+The owner took that decision on 2026-11-23 for three sources: the Google DeepMind blog, the Google Research blog and Simon Willison's Weblog. Their terms remain silent or unclear on this use. The decision does not turn that silence into permission; it is a judgement taken under uncertainty, and an operating policy, not legal advice. The terms pages are as they were on 2026-11-21. Anyone else who runs this project makes that judgement for themselves.
 
 Sources whose terms or `robots.txt` restrict automated **access** are unaffected and stay disabled.
+
+The Hugging Face blog was considered and left out. Its terms say proprietary materials may not be reproduced without written permission. ADR-012 treats an express prohibition on copying as a refusal, which the owner's preference does not override.
 
 ## Summary
 
@@ -49,7 +51,7 @@ Sources whose terms or `robots.txt` restrict automated **access** are unaffected
 | arXiv `cs.CL` | Feed-summary | Explicit | Metadata and abstracts, indefinitely | Titles and abstracts |
 | Google DeepMind blog | Full text | Explicit | Metadata; article text for 90 days | Article text |
 | Google Research blog | Full text | Explicit | Metadata; article text for 90 days | Article text |
-| Hugging Face blog | Full text | Interpretation | Metadata; article text for 90 days | Article text |
+| Hugging Face blog | Metadata-only | Interpretation | Metadata | Title, link and date |
 | Simon Willison (long-form entries) | Full text, from the feed | Interpretation | Metadata; article text for 90 days | Article text |
 | Hacker News | Metadata-only | Interpretation | Item metadata, no usernames | Title, link and score |
 | OpenAI News | Disabled | Uncertain | Nothing | Nothing |
@@ -67,7 +69,7 @@ For a full-text source:
 
 ### What this means for M1
 
-The model reads full articles from four sources and abstracts from arXiv, so assessments from those can cite verified quotations. A Hacker News item contributes its title, link and score; the page it links to is read only when that page belongs to a full-text source. A story known only from metadata is still capped at `watch` by the editorial policy.
+The model reads full articles from three sources and abstracts from arXiv, so assessments from those can cite verified quotations. A Hugging Face post contributes its title and link only, so the model can flag it as relevant but cannot quote it. A Hacker News item contributes its title, link and score; the page it links to is read only when that page belongs to a full-text source. A story known only from metadata is still capped at `watch` by the editorial policy.
 
 ## Records
 
@@ -102,12 +104,12 @@ The model reads full articles from four sources and abstracts from arXiv, so ass
 - **Feed:** `https://huggingface.co/blog/feed.xml`
 - **Pages read:** [terms of service](https://huggingface.co/terms-of-service) (effective 15 September 2022), [content policy](https://huggingface.co/content-policy) (effective 10 April 2025), [robots.txt](https://huggingface.co/robots.txt), the blog index.
 - **Access — interpretation.** The terms have no clause on automated reading. robots.txt allows everything and the site publishes the feed. The content policy prohibits "excessive bulk activity".
-- **Storage — by the owner's decision.** "You may not alter, reproduce, republish, license any of our proprietary materials, unless we expressly give you a written permission to do so." The blog mixes official and community posts; neither states a licence. Article text is kept privately for 90 days and never republished, under the decision of 2026-11-23. This is the record where the terms sit closest to the decision: a private working copy is a reproduction in the literal sense.
-- **Model submission — by the owner's decision.** Not addressed by the terms. Article text is submitted under the decision of 2026-11-23.
-- **Body:** the article page, fetched only from `huggingface.co`.
-- **Retention:** metadata indefinitely; article text 90 days.
-- **Attribution:** link to the original post. Quotations of at most 300 characters.
+- **Storage — metadata only, explicit.** "You may not alter, reproduce, republish, license any of our proprietary materials, unless we expressly give you a written permission to do so." A private working copy of an article is a reproduction. Under ADR-012 an express prohibition on copying is a refusal, so no article text or feed summary is stored. The blog mixes official and community posts; neither states a licence.
+- **Model submission — by the owner's decision.** The stored metadata (title, link, date) may be sent to the model under the decision of 2026-11-23. No article text is sent.
+- **Retention:** metadata indefinitely; nothing else kept.
+- **Attribution:** link to the original post. No quotations.
 - **Not read:** individual post pages, which might carry their own licence.
+- **To read it in full later:** written permission from Hugging Face, or a licence on the post that allows copying.
 
 ### Simon Willison's Weblog
 
@@ -159,7 +161,7 @@ These do not block the configuration. They are recorded so they are not lost.
 
 | # | Point | Current handling |
 |---|---|---|
-| 1 | May titles and links from metadata-only sources be sent to the model? | Settled on 2026-11-23: yes for Hacker News, the only enabled metadata-only source. |
+| 1 | May titles and links from metadata-only sources be sent to the model? | Settled on 2026-11-23: yes for Hugging Face and Hacker News, the two enabled metadata-only sources. |
 | 2 | Full papers from arXiv | Not approved. Abstracts only. Full text would need PDF handling and a check of each paper's licence. |
 | 3 | The Y Combinator terms clause on scraping | Unverified verbatim. Owner to read. |
 | 4 | Permission from Simon Willison | Not requested. |
