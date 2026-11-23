@@ -180,7 +180,7 @@ def test_result_is_single_line_json_with_the_expected_fields() -> None:
     assert "\n" not in text
     data = json.loads(text)
     assert data["schema"] == "merge_eligibility.v1"
-    assert data["phase"] == "A-report-only"
+    assert data["phase"] == "report-only"
     assert data["eligible"] is False
     assert data["pull_request"] == 7
     assert data["head_sha"] == "abc123"
@@ -198,13 +198,14 @@ def test_hostile_file_name_cannot_break_out_of_the_outputs() -> None:
     row = next(line for line in summary.splitlines() if line.startswith("| `scripts/x"))
     assert "<script>" not in summary
     assert "eligible=true" not in [line.strip() for line in summary.splitlines()]
-    assert row.count("|") == 4
+    assert row.count("|") == 5
 
 
 def test_summary_states_that_the_report_is_informational() -> None:
     blocked = me.summary_markdown(me.evaluate(["uv.lock"]))
     assert "Not eligible for automatic merge" in blocked
-    assert "does not block the owner from merging" in blocked
+    assert "informational and blocks nothing" in blocked
+    assert "this workflow never merges anything" in blocked
     assert "`uv.lock`" in blocked
     clear = me.summary_markdown(me.evaluate(["README.md"]))
     assert "**Eligible:**" in clear
@@ -325,7 +326,7 @@ def test_codeowners_assigns_every_rule_to_the_owner() -> None:
         for line in me.codeowners_text().splitlines()
         if line and not line.startswith("#")
     ]
-    assert len(rules) == sum(len(patterns) for _, patterns in me.PROTECTED)
+    assert len(rules) == sum(len(patterns) for _, patterns in me.OWNER_ONLY)
     assert all(owners == ["@sdeery14"] for _, *owners in rules)
 
 
@@ -363,3 +364,92 @@ def test_policy_matches_the_table_in_agents_md() -> None:
 def test_control_characters_in_a_file_name_do_not_evade_matching(path: str) -> None:
     assert me.match_path(path) is not None
     assert me.evaluate([path]).eligible is False
+
+
+# --- ADR-013: owner-only paths ------------------------------------------------------------
+
+
+def test_every_owner_only_pattern_is_also_a_protected_pattern() -> None:
+    protected = {p for _, patterns in me.PROTECTED for p in patterns}
+    assert protected >= me.OWNER_ONLY_PATTERNS
+    # What the round may merge although it is protected: dependencies, contracts and
+    # migrations, prompts and policy, and golden and recorded test files.
+    assert protected - me.OWNER_ONLY_PATTERNS == {
+        "pyproject.toml",
+        "uv.lock",
+        "schemas/**",
+        "migrations/**",
+        "src/ai_briefing/prompts/**",
+        "src/ai_briefing/editorial/policy/**",
+        "tests/**/golden/**",
+        "tests/**/recorded/**",
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/adr/013-agent-merge.md",
+        "docs/rfc/AI-Briefing-RFC-v0.3.md",
+        "config/sources.yaml",
+        "config/models.yaml",
+        ".github/workflows/ci.yml",
+        ".github/CODEOWNERS",
+        ".claude/skills/round/config.json",
+        ".claude/skills/round/SKILL.md",
+        "scripts/round_outcome.py",
+        "scripts/merge_eligibility.py",
+        "AGENTS.md",
+        "agents.MD",
+        "CLAUDE.md",
+        "deploy/compose.yml",
+        "Dockerfile",
+        "src/ai_briefing/evaluation/metrics.py",
+        "evals/cases/one.json",
+    ],
+)
+def test_an_owner_only_path_can_never_be_merged_by_the_round(path: str) -> None:
+    result = me.evaluate([path, "src/ai_briefing/domain/records.py"])
+    assert [m.path for m in result.owner_only] == [path]
+    assert result.agent_may_merge is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "pyproject.toml",
+        "uv.lock",
+        "schemas/daily_briefing.v1.schema.json",
+        "migrations/versions/0001_first.py",
+        "src/ai_briefing/prompts/screening.md",
+        "src/ai_briefing/editorial/policy/rules.py",
+        "tests/llm/recorded/screening.json",
+        "tests/briefings/golden/day.md",
+    ],
+)
+def test_other_protected_paths_are_reported_but_do_not_prevent_the_round_merging(path: str) -> None:
+    result = me.evaluate([path])
+    assert [m.path for m in result.protected] == [path]
+    assert result.owner_only == ()
+    assert result.eligible is False  # still reported as touching a protected path
+    assert result.agent_may_merge is True
+
+
+def test_unprotected_code_may_be_merged_by_the_round() -> None:
+    result = me.evaluate(["src/ai_briefing/sources/fetcher.py", "tests/sources/test_fetcher.py"])
+    assert result.eligible is True
+    assert result.agent_may_merge is True
+
+
+def test_an_uncertain_file_list_can_never_be_merged_by_the_round() -> None:
+    assert me.evaluate([]).agent_may_merge is False
+    assert me.evaluate(["src/x.py"], complete=False).agent_may_merge is False
+    assert me.evaluate(["src/x.py"], expected_count=0).agent_may_merge is False
+    assert me.failure("could not read").agent_may_merge is False
+
+
+def test_the_summary_marks_owner_only_paths() -> None:
+    summary = me.summary_markdown(me.evaluate(["config/sources.yaml", "uv.lock"]))
+    assert "**Owner-only:** 1 changed file(s)" in summary
+    assert "| `config/sources.yaml` | models-budget-sources | `config/**` | yes |" in summary
+    assert "| `uv.lock` | dependencies | `uv.lock` | no |" in summary

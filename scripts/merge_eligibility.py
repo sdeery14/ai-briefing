@@ -1,12 +1,14 @@
-"""Report whether a pull request touches a protected path (ADR-011).
+"""Report whether a pull request touches a protected path (ADR-011, ADR-013).
 
-The protected paths below are the table in ADR-011, written as patterns. This script is
-the single source for them: ``.github/CODEOWNERS`` is generated from the same list and a
-test fails if the two drift apart.
+The protected paths below are the table in ADR-011, written as patterns. A change to any
+of them is declared in the pull request and reviewed with care. A subset of them, the
+owner-only paths of ADR-013, can be merged only by the owner; the round may merge a
+pull request that touches none of those. This script is the single source for both lists:
+``.github/CODEOWNERS`` is generated from the owner-only list and a test fails if the two
+drift apart.
 
-In ADR-011 Phase A the result is informational. A pull request that touches a protected
-path is reported as not eligible for a future automatic merge; nothing here blocks the
-owner from merging it. The script never merges anything.
+The CI report is informational: it says which protected and owner-only paths a pull
+request touches and blocks nothing. The script never merges anything.
 
 It reads the changed-file list from the GitHub API and runs no code from the pull request.
 File names are untrusted input: they are matched and printed, never executed or evaluated.
@@ -33,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "merge_eligibility.v1"
-PHASE = "A-report-only"
+PHASE = "report-only"
 OWNER = "@sdeery14"
 API_ROOT = "https://api.github.com"
 
@@ -82,6 +84,33 @@ PROTECTED: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+# ADR-013 owner-only paths: the owner's decisions and the controls themselves. A pull
+# request that touches one is merged by the owner and by nobody else. Every pattern here
+# is also in PROTECTED.
+OWNER_ONLY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("decisions", ("docs/rfc/**", "docs/adr/**")),
+    ("evaluation", ("src/ai_briefing/evaluation/**", "evals/**")),
+    ("models-budget-sources", ("config/**",)),
+    ("workflows", (".github/**",)),
+    (
+        "deployment",
+        (
+            "deploy/**",
+            "**/Dockerfile*",
+            "**/.dockerignore",
+            "**/compose*.yml",
+            "**/compose*.yaml",
+            "**/docker-compose*.yml",
+            "**/docker-compose*.yaml",
+        ),
+    ),
+    (
+        "agent-workflow",
+        (".claude/**", "scripts/**", "AGENTS.md", "CLAUDE.md", "CODEOWNERS"),
+    ),
+)
+OWNER_ONLY_PATTERNS: frozenset[str] = frozenset(p for _, patterns in OWNER_ONLY for p in patterns)
+
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
@@ -104,6 +133,10 @@ class Result:
     schema: str = SCHEMA
     phase: str = PHASE
     categories: tuple[str, ...] = field(default=())
+    # ADR-013: the protected paths that only the owner may merge, and whether the round
+    # may merge this change. False whenever anything is uncertain.
+    owner_only: tuple[Match, ...] = field(default=())
+    agent_may_merge: bool = False
 
     def to_json(self) -> str:
         """One line of JSON. ``json.dumps`` escapes newlines, so it is safe in a step output."""
@@ -156,6 +189,11 @@ def match_path(path: str) -> Match | None:
     return None
 
 
+def owner_only_matches(protected: Sequence[Match]) -> tuple[Match, ...]:
+    """The protected matches that fall on an ADR-013 owner-only path."""
+    return tuple(m for m in protected if m.pattern in OWNER_ONLY_PATTERNS)
+
+
 def evaluate(
     paths: Sequence[str],
     *,
@@ -177,6 +215,10 @@ def evaluate(
     if protected:
         reasons.append(f"{len(protected)} changed file(s) are on protected paths")
     categories = tuple(sorted({m.category for m in protected}))
+    owner_only = owner_only_matches(protected)
+    # The round may merge only when the list is known to be complete and non-empty and no
+    # owner-only path is in it. Other protected paths do not prevent it (ADR-013).
+    uncertain = [r for r in reasons if "protected paths" not in r]
     return Result(
         eligible=not reasons,
         complete=complete,
@@ -186,6 +228,8 @@ def evaluate(
         pull_request=pull_request,
         head_sha=head_sha,
         categories=categories,
+        owner_only=owner_only,
+        agent_may_merge=not uncertain and not owner_only,
     )
 
 
@@ -271,10 +315,17 @@ def summary_markdown(result: Result, *, limit: int = 50) -> str:
         lines.append("**Eligible:** no protected path is touched.")
     else:
         lines.append("**Not eligible for automatic merge.**")
+    if result.owner_only:
+        lines.append("")
+        lines.append(
+            f"**Owner-only:** {len(result.owner_only)} changed file(s) are on paths that only "
+            "the owner may merge (ADR-013)."
+        )
     lines += [
         "",
-        "ADR-011 Phase A: this report is informational. It does not block the owner from "
-        "merging, and nothing merges automatically.",
+        "This report is informational and blocks nothing. Under ADR-013 the round may merge "
+        "a pull request only when it touches no owner-only path, its required checks pass "
+        "and its review is complete; this workflow never merges anything.",
         "",
         f"- Changed files: {result.changed_file_count}",
         f"- File list complete: {'yes' if result.complete else 'no'}",
@@ -282,11 +333,18 @@ def summary_markdown(result: Result, *, limit: int = 50) -> str:
     for reason in result.reasons:
         lines.append(f"- Reason: {reason}")
     if result.protected:
-        lines += ["", "| Protected path touched | Category | Rule |", "|---|---|---|"]
+        lines += [
+            "",
+            "| Protected path touched | Category | Rule | Owner-only |",
+            "|---|---|---|---|",
+        ]
         for match in result.protected[:limit]:
-            lines.append(f"| `{_shown(match.path)}` | {match.category} | `{match.pattern}` |")
+            owner = "yes" if match.pattern in OWNER_ONLY_PATTERNS else "no"
+            lines.append(
+                f"| `{_shown(match.path)}` | {match.category} | `{match.pattern}` | {owner} |"
+            )
         if len(result.protected) > limit:
-            lines.append(f"| ... and {len(result.protected) - limit} more | | |")
+            lines.append(f"| ... and {len(result.protected) - limit} more | | | |")
     return "\n".join(lines) + "\n"
 
 
@@ -304,12 +362,12 @@ def codeowners_text() -> str:
         "# Generated from scripts/merge_eligibility.py. Do not edit by hand:",
         "#   python3 scripts/merge_eligibility.py --print-codeowners > .github/CODEOWNERS",
         "#",
-        "# These are the protected paths in ADR-011. A change to any of them needs the",
-        "# owner's review. This file only names the owner; a repository ruleset has to",
-        "# require code-owner review for that to be enforced.",
+        "# These are the owner-only paths in ADR-013. A pull request that changes any of",
+        "# them is merged by the owner and by nobody else. This file only names the owner;",
+        "# a repository ruleset has to require code-owner review for that to be enforced.",
         "",
     ]
-    for category, patterns in PROTECTED:
+    for category, patterns in OWNER_ONLY:
         lines.append(f"# {category}")
         width = max(len(codeowners_pattern(p)) for p in patterns)
         for pattern in patterns:

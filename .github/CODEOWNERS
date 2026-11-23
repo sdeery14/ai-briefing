@@ -1,9 +1,9 @@
 # Generated from scripts/merge_eligibility.py. Do not edit by hand:
 #   python3 scripts/merge_eligibility.py --print-codeowners > .github/CODEOWNERS
 #
-# These are the protected paths in ADR-011. A change to any of them needs the
-# owner's review. This file only names the owner; a repository ruleset has to
-# require code-owner review for that to be enforced.
+# These are the owner-only paths in ADR-013. A pull request that changes any of
+# them is merged by the owner and by nobody else. This file only names the owner;
+# a repository ruleset has to require code-owner review for that to be enforced.
 
 # decisions
 /docs/rfc/  @sdeery14
@@ -12,26 +12,12 @@
 # evaluation
 /src/ai_briefing/evaluation/  @sdeery14
 /evals/                       @sdeery14
-/tests/**/golden/             @sdeery14
-/tests/**/recorded/           @sdeery14
-
-# prompts-and-editorial-policy
-/src/ai_briefing/prompts/           @sdeery14
-/src/ai_briefing/editorial/policy/  @sdeery14
 
 # models-budget-sources
 /config/  @sdeery14
 
-# contracts-and-migrations
-/schemas/     @sdeery14
-/migrations/  @sdeery14
-
 # workflows
 /.github/  @sdeery14
-
-# dependencies
-/pyproject.toml  @sdeery14
-/uv.lock         @sdeery14
 
 # deployment
 /deploy/              @sdeery14
