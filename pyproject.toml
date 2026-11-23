@@ -1,7 +1,10 @@
-# Development tooling only. There is no application package yet: M1 issue 1.1 adds
-# src/ai_briefing, the build backend, runtime dependencies and the CLI entry point.
-# Until then this file exists so that linting, type checking and tests of the
-# repository's own tooling (scripts/ and tests/) are reproducible.
+# The application package is src/ai_briefing (M1 issue 1.1). It has no runtime dependencies
+# yet; each later issue adds the ones it needs. Linting, type checking and tests cover the
+# package and the repository's own tooling (scripts/ and tests/).
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10"]
+build-backend = "uv_build"
 
 [project]
 name = "ai-briefing"
@@ -11,6 +14,9 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = []
+
+[project.scripts]
+ai-briefing = "ai_briefing.runtime.cli:main"
 
 [dependency-groups]
 dev = [
@@ -22,8 +28,6 @@ dev = [
 ]
 
 [tool.uv]
-# Nothing to build or install yet; see the note at the top of this file.
-package = false
 # Do not resolve to releases newer than this date. Raising it is a dependency change
 # and needs owner review (ADR-011).
 exclude-newer = "2026-11-07T00:00:00Z"
@@ -34,7 +38,7 @@ exclude-newer = "2026-11-07T00:00:00Z"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["scripts", "tests"]
+src = ["src", "scripts", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -67,6 +71,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = [
+  "ai_briefing",
   "merge_eligibility",
   "offline_guard",
   "pr_wait",
@@ -81,7 +86,7 @@ known-first-party = [
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
-files = ["scripts", "tests"]
+files = ["src", "scripts", "tests"]
 mypy_path = ["scripts"]
 strict = true
 warn_unreachable = true

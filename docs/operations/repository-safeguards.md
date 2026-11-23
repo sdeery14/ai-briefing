@@ -18,7 +18,7 @@ Nothing in this document is applied automatically. The settings in section 3 are
 
 ### What the checks cover today
 
-There is no application package yet. The lint, type and test jobs cover the repository's own tooling: `scripts/` and `tests/`. They say nothing about application behaviour, and each job says so in its summary. When M1 issue 1.1 adds the package, the same jobs cover it without renaming.
+The lint, type and test jobs cover the package in `src/` and the repository's own tooling in `scripts/` and `tests/`. The package is a skeleton (M1 issue 1.1), so the jobs say little about application behaviour yet. The job summaries still describe the earlier, tooling-only scope and are due an update.
 
 | Job (exact check name) | Covers | Does not cover yet |
 |---|---|---|
