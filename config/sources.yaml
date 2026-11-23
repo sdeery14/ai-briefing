@@ -3,7 +3,8 @@
 # Protected path: any change here needs the owner's review (ADR-011).
 #
 # Operating modes were approved by the owner on 2026-11-21 for personal, non-commercial use,
-# and widened by the owner on 2026-11-23 to allow private full-text reading of four sources.
+# and widened by the owner on 2026-11-23 to allow private full-text reading of four sources
+# under ADR-012. Their terms are silent on that use; the records say so.
 # The reasoning, quotations and links behind each record are in
 # docs/operations/source-terms-records.md. This is an operating policy, not legal advice.
 #

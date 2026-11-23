@@ -29,16 +29,16 @@ The model provider's own terms apply to every source. Anthropic's commercial ter
 
 The first approval sent only arXiv text to the model. The owner judged that too narrow for the product: a briefing must be able to cite specific quotations and figures from the articles it reports on, which is what RFC §4 and ADR-004 describe.
 
-No source's terms expressly grant the right to keep article text or to send it to a model. ADR-010 allows bodies "only from catalogued sources whose recorded terms permit it". The owner decided that, for this project, a source's terms permit private full-text reading when all of these hold:
+No source's terms expressly grant the right to keep article text or to send it to a model. ADR-010 said that a source with unclear terms is metadata-only. [ADR-012](../adr/012-private-full-text-reading.md) amends that sentence: metadata-only stays the default, and the owner may move a source to full-text reading by a recorded decision when all of these hold:
 
-1. The terms do not prohibit automated reading of the pages concerned.
-2. `robots.txt` allows it.
-3. The text is stored only on the owner's machine and purged within 90 days.
+1. Access is permitted: the terms do not prohibit automated reading of the pages concerned, and `robots.txt` allows it.
+2. The text is stored only on the owner's machine and never enters the repository.
+3. The text is purged within 90 days.
 4. The text is sent to the model provider for analysis only, and the provider does not train on it.
 5. Briefings show short attributed quotations and a link, never a reproduced article.
 6. Use is personal and non-commercial.
 
-This is the owner's reading of the terms and an operating policy, not legal advice. It resolves the uncertainty for the four sources below by decision, not by new evidence: the terms pages are as they were on 2026-11-21. Anyone else who runs this project makes that judgement for themselves.
+The owner took that decision for the four sources below on 2026-11-23. Their terms remain silent or unclear on this use. The decision does not turn that silence into permission; it is a judgement taken under uncertainty, and an operating policy, not legal advice. The terms pages are as they were on 2026-11-21. Anyone else who runs this project makes that judgement for themselves.
 
 Sources whose terms or `robots.txt` restrict automated **access** are unaffected and stay disabled.
 
