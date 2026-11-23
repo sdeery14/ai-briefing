@@ -517,7 +517,7 @@ def test_the_skill_merges_only_through_the_checked_command() -> None:
     text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
     assert "uv run python scripts/round_outcome.py merge <pr>" in text
     assert "Never merge a pull request in any other way" in text
-    assert "never turn on\n  auto-merge" in text or "never turn on auto-merge" in text
+    assert "Never turn on auto-merge" in text
     assert "owner-only path" in text
     assert "ADR-013" in text
     assert "ready-for-owner" in text
