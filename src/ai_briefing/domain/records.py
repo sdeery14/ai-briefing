@@ -1,6 +1,9 @@
 """Typed records for the entities in RFC §5 that M1 uses.
 
 These are values, not database rows: every record is immutable and validates itself.
+Immutable means all the way down: a field never holds a list or a dictionary that a caller
+could change behind the record's back. Sequences are tuples, a mapping is read-only, and a
+briefing's content is held as JSON text.
 ``id`` is ``None`` until storage assigns one. Timestamps are timezone-aware and are held
 in UTC. Nothing here reads a file, a database or the network.
 
@@ -11,8 +14,10 @@ storage module.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Annotated, Self
 
 from pydantic import (
@@ -22,7 +27,10 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    PlainSerializer,
     StringConstraints,
+    TypeAdapter,
+    field_validator,
     model_validator,
 )
 
@@ -67,6 +75,20 @@ HttpsUrl = Annotated[str, StringConstraints(pattern=r"^https://[^\s]+$")]
 WebUrl = Annotated[str, StringConstraints(pattern=r"^https?://[^\s]+$")]
 Score = Annotated[int, Field(ge=MIN_SCORE, le=MAX_SCORE)]
 RecordId = Annotated[int, Field(ge=1)]
+
+
+def _read_only(value: Mapping[str, int]) -> Mapping[str, int]:
+    return MappingProxyType(dict(value))
+
+
+Counts = Annotated[
+    Mapping[str, Annotated[int, Field(ge=0)]],
+    AfterValidator(_read_only),
+    PlainSerializer(dict, return_type=dict[str, int]),
+]
+"""Named counts, held read-only: assigning to a key raises ``TypeError``."""
+
+_JSON_OBJECT: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 
 
 class Record(BaseModel):
@@ -384,7 +406,12 @@ class EditorialDecision(Record):
 
 
 class Briefing(Record):
-    """One immutable version of a day's briefing. Unique on date, variant and version."""
+    """One immutable version of a day's briefing. Unique on date, variant and version.
+
+    ``content`` is the briefing document as JSON text, not a dictionary, so the version
+    cannot be altered after ``content_hash`` was taken. :meth:`document` parses a fresh
+    copy each time; changing that copy changes nothing here.
+    """
 
     id: RecordId | None = None
     local_date: date
@@ -392,10 +419,20 @@ class Briefing(Record):
     variant: BriefingVariant
     version: int = Field(ge=1)
     status: BriefingStatus
-    content: dict[str, JsonValue]
+    content: NonEmptyStr
     content_hash: Sha256Hex
     configuration_hash: Sha256Hex
     profile: NonEmptyStr = "default"
+
+    @field_validator("content")
+    @classmethod
+    def _content_is_a_json_object(cls, value: str) -> str:
+        _JSON_OBJECT.validate_json(value)
+        return value
+
+    def document(self) -> dict[str, JsonValue]:
+        """The briefing document, parsed afresh. The caller owns the returned copy."""
+        return _JSON_OBJECT.validate_json(self.content)
 
 
 class BriefingItem(Record):
@@ -463,7 +500,7 @@ class JobRun(Record):
     started_at: UtcDatetime
     ended_at: UtcDatetime | None = None
     status: JobStatus
-    counts: dict[str, int] = Field(default_factory=dict)
+    counts: Counts = Field(default_factory=dict)
     error: str | None = None
     application_version: NonEmptyStr
     configuration_hash: Sha256Hex

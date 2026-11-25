@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
+from ai_briefing.briefings.contract import contract_validator
 from ai_briefing.domain.enums import BriefingStatus, Confidence, EditorialClass, SourceRole
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +28,7 @@ def read_json(path: Path) -> Any:
 
 SCHEMA: dict[str, Any] = read_json(SCHEMA_PATH)
 MANIFEST: dict[str, Any] = read_json(EXAMPLES / "manifest.json")
-VALIDATOR = Draft202012Validator(SCHEMA)
+VALIDATOR = contract_validator(SCHEMA)
 
 
 def failures(document: Any) -> set[tuple[str, str]]:
@@ -90,7 +91,11 @@ def test_an_invalid_example_fails_for_its_stated_reason(entry: dict[str, str]) -
 @pytest.mark.parametrize("entry", MANIFEST["invalid"], ids=lambda e: e["file"])
 def test_an_invalid_example_breaks_one_rule_only(entry: dict[str, str]) -> None:
     # Each example isolates one rule, so a consumer can tell which rule it is testing.
-    assert failures(read_json(EXAMPLES / entry["file"])) == {(entry["at"], entry["keyword"])}
+    found = failures(read_json(EXAMPLES / entry["file"]))
+    if entry["keyword"] == "pattern":
+        # Text that is not shaped like a date also fails the date format at the same place.
+        found.discard((entry["at"], "format"))
+    assert found == {(entry["at"], entry["keyword"])}
 
 
 def test_the_examples_cover_every_status_and_stay_synthetic() -> None:
@@ -122,3 +127,38 @@ def test_the_rfc_example_validates() -> None:
     start = rfc.index('{\n  "schema_version": "daily_briefing.v1"')
     example = json.loads(rfc[start : rfc.index("\n```", start)])
     assert failures(example) == set()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("local_date", "2026-02-31"),
+        ("local_date", "2026-02-29"),  # 2026 is not a leap year
+        ("local_date", "2026-04-31"),
+        ("generated_at", "2026-02-30T10:00:00Z"),
+        ("generated_at", "2026-11-31T10:00:00Z"),
+    ],
+)
+def test_an_impossible_date_is_rejected_although_it_matches_the_pattern(
+    field: str, value: str
+) -> None:
+    document = read_json(EXAMPLES / "valid" / "ready_typical.json")
+    document[field] = value
+    assert failures(document) == {(f"/{field}", "format")}
+    # The schema alone, without the format checks, would let it through. That is why the
+    # contract is the schema together with contract_validator.
+    assert Draft202012Validator(SCHEMA).is_valid(document)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("local_date", "2028-02-29"), ("generated_at", "2028-02-29T23:59:59.123456Z")],
+)
+def test_a_real_leap_day_is_accepted(field: str, value: str) -> None:
+    document = read_json(EXAMPLES / "valid" / "ready_typical.json")
+    document[field] = value
+    assert failures(document) == set()
+
+
+def test_the_schema_says_that_the_date_formats_are_asserted() -> None:
+    assert "must assert the date and date-time formats" in SCHEMA["description"]

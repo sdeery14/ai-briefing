@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/sdeery14/ai-briefing/schemas/daily_briefing.v1.schema.json",
   "title": "daily_briefing.v1",
-  "description": "The briefing AI Briefing exports for one day (RFC v0.3 section 8.2, ADR-006). Every string is plain text derived from untrusted web content: a consumer must escape it and must never pass it to a model prompt. Every URL comes from a stored source document, never from model output.",
+  "description": "The briefing AI Briefing exports for one day (RFC v0.3 section 8.2, ADR-006). Every string is plain text derived from untrusted web content: a consumer must escape it and must never pass it to a model prompt. Every URL comes from a stored source document, never from model output. A validator must assert the date and date-time formats, not only the patterns: a pattern cannot tell that 31 February is not a date.",
   "type": "object",
   "additionalProperties": false,
   "required": [

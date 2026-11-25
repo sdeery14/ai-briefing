@@ -30,6 +30,7 @@ ALLOWED = frozenset(
         "functools",
         "itertools",
         "re",
+        "types",
         "typing",
         "unicodedata",
         "annotated_types",

@@ -46,6 +46,10 @@ from ai_briefing.domain.records import (
 
 NOW = datetime(2026, 11, 19, 11, 15, tzinfo=UTC)
 HASH = "a" * 64
+CONTENT = (
+    '{"schema_version": "daily_briefing.v1", '
+    '"stories": [{"item_id": "i1", "evidence": [{"url": "https://example.org/a"}]}]}'
+)
 
 
 def full_text_source(**changes: Any) -> dict[str, Any]:
@@ -395,13 +399,70 @@ def test_a_briefing_is_versioned_and_has_a_default_profile() -> None:
         variant=BriefingVariant.PIPELINE,
         version=1,
         status=BriefingStatus.READY,
-        content={"schema_version": "daily_briefing.v1", "stories": []},
+        content=CONTENT,
         content_hash=HASH,
         configuration_hash=HASH,
     )
     assert briefing.profile == "default"
     with pytest.raises(ValidationError):
         briefing.model_validate({**briefing.model_dump(), "version": 0})
+
+
+def briefing_record(content: str = CONTENT) -> Briefing:
+    return Briefing(
+        local_date=date(2026, 11, 19),
+        timezone="America/New_York",
+        variant=BriefingVariant.PIPELINE,
+        version=1,
+        status=BriefingStatus.READY,
+        content=content,
+        content_hash=HASH,
+        configuration_hash=HASH,
+    )
+
+
+def test_a_briefing_version_cannot_be_changed_through_its_content() -> None:
+    briefing = briefing_record()
+    document = briefing.document()
+    assert document["stories"] == [
+        {"item_id": "i1", "evidence": [{"url": "https://example.org/a"}]}
+    ]
+    # The caller may do anything to its copy. The stored version does not move.
+    stories = document["stories"]
+    assert isinstance(stories, list)
+    stories.clear()
+    document["injected"] = True
+    assert briefing.content == CONTENT
+    assert briefing.document()["stories"] != []
+    assert "injected" not in briefing.document()
+    # Each call hands out a separate copy, nested values included.
+    first, second = briefing.document(), briefing.document()
+    assert first == second
+    assert first is not second
+    assert first["stories"] is not second["stories"]
+    with pytest.raises(ValidationError):
+        briefing.content = "{}"
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[1, 2]", '"text"', "null", "{"])
+def test_briefing_content_must_be_a_json_object(content: str) -> None:
+    with pytest.raises(ValidationError):
+        briefing_record(content)
+
+
+def test_no_record_field_holds_a_mutable_container() -> None:
+    import ai_briefing.domain.records as records
+
+    mutable: list[str] = []
+    for name in dir(records):
+        model = getattr(records, name)
+        if not (isinstance(model, type) and issubclass(model, records.Record)):
+            continue
+        for field_name, info in model.model_fields.items():
+            text = str(info.annotation)
+            if "dict[" in text or "list[" in text or "set[" in text:
+                mutable.append(f"{name}.{field_name}: {text}")
+    assert mutable == []
 
 
 def test_a_story_or_watch_item_names_its_decision() -> None:
@@ -467,8 +528,17 @@ def test_a_job_has_an_end_time_exactly_when_it_has_finished() -> None:
         "configuration_hash": HASH,
     }
     assert JobRun(**fields, status=JobStatus.RUNNING).counts == {}
-    done = JobRun(**fields, status=JobStatus.SUCCEEDED, ended_at=NOW, counts={"documents": 3})
+    given = {"documents": 3}
+    done = JobRun(**fields, status=JobStatus.SUCCEEDED, ended_at=NOW, counts=given)
     assert done.counts == {"documents": 3}
+    # The counts are read-only, and are a copy: neither route changes the record.
+    with pytest.raises(TypeError):
+        done.counts["documents"] = 99  # type: ignore[index]
+    given["documents"] = 99
+    assert done.counts == {"documents": 3}
+    assert done.model_dump()["counts"] == {"documents": 3}
+    with pytest.raises(ValidationError):
+        JobRun(**fields, status=JobStatus.RUNNING, counts={"documents": -1})
     with pytest.raises(ValidationError, match="end time exactly when"):
         JobRun(**fields, status=JobStatus.SUCCEEDED)
     with pytest.raises(ValidationError, match="end time exactly when"):
