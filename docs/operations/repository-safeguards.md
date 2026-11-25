@@ -141,6 +141,19 @@ Also check Settings → Code owners (or the `CODEOWNERS` file view) for syntax e
 - **`uv` version.** CI pins `uv` 0.9.9. Use the same version locally when changing `uv.lock`.
 - **Updating a pinned tool** (the checkout action, `uv`, `gitleaks`) means changing a version and its checksum or commit together in `.github/workflows/`. That is a protected-path change.
 
-## 6. Later: Phase B
+## 6. Who merges (ADR-013)
+
+ADR-013 amends ADR-011. The sections above were written for Phase A, in which the owner merged everything; where they say so, this section is current.
+
+- The `/round` workflow merges a pull request itself when its required checks pass, the Codex review of its head commit is complete with every thread resolved, it is not labelled `needs-human`, GitHub reports it clean, and it touches no owner-only path.
+- It merges only with `uv run python scripts/round_outcome.py merge <pr>`, which re-checks all of that, runs `gh pr merge --auto --squash --delete-branch` naming the exact commit that was reviewed, and waits until GitHub reports the merge. This is the approach of the ProjectBudget round.
+- A pull request that is eligible but behind `main` is updated by merging `main` into it, then checked and reviewed again before it is merged.
+- Owner-only paths are the decision records, workflows, migrations, `pyproject.toml`, evaluation, `config/`, deployment and the agent workflow. They are listed in `scripts/merge_eligibility.py`, and `.github/CODEOWNERS` is generated from that list. A pull request touching one waits for the owner, labelled `ready-for-owner`.
+- "Allow auto-merge" can stay off: the round runs the merge command only on a pull request GitHub already reports as clean, so it merges at once. If `gh` ever reports that auto-merge is not allowed, the round leaves the pull request for the owner and says so. The ruleset is unchanged: it blocks a merge with a failing required check or an unresolved thread for every account, the owner's included.
+- To return to the owner merging everything, set `merge_authority` to `owner-only` in `.claude/skills/round/config.json`.
+
+The agent still acts under the owner's GitHub account. ADR-013 states the risk that leaves.
+
+## 7. Later: Phase B
 
 Not part of this work. Before automatic merging is enabled, ADR-011 requires a separate agent identity, an environment without the owner's credentials, code-owner review turned on, the eligibility check made required and failing when a pull request is not eligible, an author allowlist, and a demonstration with test pull requests. The eligibility script would then need an enforcing mode; today it only reports.

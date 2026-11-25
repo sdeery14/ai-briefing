@@ -164,9 +164,8 @@ def build_plan(
         "schema": "round_plan.v1",
         "repository": config.repository,
         "milestone": milestone_title,
-        "phase": "A",
-        "merge": "owner-only",
-        "automatic_merge": False,
+        "merge": "agent-when-eligible" if config.agent_may_merge else "owner-only",
+        "automatic_merge": config.agent_may_merge,
         "max_fix_rounds": config.max_fix_rounds,
         "ready": [e["number"] for e in entries if e["status"] == "ready"],
         "blocked": [e["number"] for e in entries if e["status"] == "blocked"],
@@ -178,7 +177,12 @@ def build_plan(
 def render(plan: dict[str, Any]) -> str:
     lines = [
         f"Round plan for milestone {plan['milestone']!r} ({plan['repository']})",
-        "Phase A: the round opens pull requests and stops. Only the owner merges.",
+        (
+            "The round merges a pull request only when every ADR-013 condition holds; "
+            "the owner merges the rest."
+            if plan.get("automatic_merge")
+            else "The round opens pull requests and stops. Only the owner merges."
+        ),
         "",
     ]
     for entry in plan["issues"]:

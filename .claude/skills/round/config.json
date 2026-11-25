@@ -1,7 +1,6 @@
 {
   "schema": "round_config.v1",
-  "phase": "A",
-  "merge_authority": "owner-only",
+  "merge_authority": "agent-when-eligible",
   "repository": "sdeery14/ai-briefing",
   "default_branch": "main",
   "milestone_title_pattern": "^M[0-9]+\\b",
