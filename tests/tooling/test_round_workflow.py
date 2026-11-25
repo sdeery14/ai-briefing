@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+import merge_eligibility
 import pr_wait
 import review_threads
 import round_lib
@@ -179,14 +180,22 @@ class FakeGh:
     """Stands in for ``gh``. Every call is also put through the real allowlist.
 
     ``fail_on`` names the kinds of call that fail: ``rules``, ``pull``, ``threads``,
-    ``comments``, ``files``, ``suites`` or ``mutation``.
+    ``comments``, ``files``, ``suites``, ``labels``, ``merge``, ``disarm`` or ``mutation``.
+
+    A ``gh pr merge`` command is recorded in ``mutations`` like any other write, and by
+    default the pull request is merged from then on. ``merge_after`` makes GitHub take
+    that many further reads to report it; ``None`` means it never does.
     """
 
     @staticmethod
     def kind(args: Sequence[str]) -> str:
+        if args[0] == "pr":
+            return "disarm" if "--disable-auto" in args else "merge"
         if args[1] == "graphql":
             query = next(a for a in args if a.startswith("query="))[len("query=") :]
             return {PR_QUERY: "pull", THREADS_QUERY: "threads"}.get(query, "mutation")
+        if re.search(r"/issues/\d+$", args[1]):
+            return "labels"
         for marker_text, name in (
             ("/rules/branches/", "rules"),
             ("/check-suites", "suites"),
@@ -205,9 +214,14 @@ class FakeGh:
         comments: list[dict[str, Any]] | None = None,
         threads: list[dict[str, Any]] | None = None,
         files: list[dict[str, Any]] | None = None,
+        labels: Sequence[str] = (),
+        merge_after: int | None = 0,
         fail: bool = False,
         fail_on: Sequence[str] = (),
     ) -> None:
+        self.labels = list(labels)
+        self.merge_after = merge_after
+        self.reads_until_merged: int | None = None
         self.pull_request = pull() if pull_request is None else pull_request
         self.rules = ruleset() if rules is None else rules
         self.comments = [codex_comment()] if comments is None else comments
@@ -222,12 +236,22 @@ class FakeGh:
         kind = self.kind(args)
         if self.fail or kind in self.fail_on:
             raise GhError(f"simulated outage: {kind}")
+        if args[0] == "pr":
+            self.mutations.append(("pr merge", {"args": " ".join(args)}))
+            if kind == "merge":
+                self.reads_until_merged = self.merge_after
+            return None
         if args[1] == "graphql":
             query = next(a for a in args if a.startswith("query="))[len("query=") :]
             variables = dict(
                 a.split("=", 1) for a in args[2:] if "=" in a and a != f"query={query}"
             )
             if query == PR_QUERY:
+                if self.reads_until_merged is not None:
+                    if self.reads_until_merged == 0:
+                        self.pull_request = {**self.pull_request, "state": "MERGED", "merged": True}
+                    else:
+                        self.reads_until_merged -= 1
                 return {"data": {"repository": {"pullRequest": self.pull_request}}}
             if query == THREADS_QUERY:
                 page = {"hasNextPage": False, "endCursor": None}
@@ -237,6 +261,8 @@ class FakeGh:
             return {"data": {"ok": True}}
         path = args[1]
         first_page = "page=1" in path
+        if re.search(r"/issues/\d+$", path):
+            return {"labels": [{"name": name} for name in self.labels]}
         if "/rules/branches/" in path:
             return self.rules
         if "/check-suites" in path:
@@ -256,13 +282,22 @@ def raw_config() -> dict[str, Any]:
     return data
 
 
-def test_the_committed_configuration_loads_and_is_phase_a() -> None:
+def test_the_committed_configuration_loads_and_follows_adr_013() -> None:
     assert CONFIG.repository == "sdeery14/ai-briefing"
     assert list(CONFIG.required_checks) == REQUIRED
     assert CONFIG.reviewer_login == REVIEWER
     assert CONFIG.allowed_authors == frozenset({"sdeery14"})
     assert CONFIG.max_fix_rounds == 2
-    assert raw_config()["merge_authority"] == "owner-only"
+    # The owner's decision in ADR-013. Changing this value is changing that decision.
+    assert raw_config()["merge_authority"] == "agent-when-eligible"
+    assert CONFIG.agent_may_merge is True
+    assert "phase" not in raw_config()
+
+
+def test_owner_only_merge_authority_still_loads_and_never_merges() -> None:
+    data = raw_config()
+    data["merge_authority"] = "owner-only"
+    assert round_lib.parse_config(data).agent_may_merge is False
 
 
 def test_protected_paths_are_not_duplicated_in_the_configuration() -> None:
@@ -277,9 +312,11 @@ def test_protected_paths_are_not_duplicated_in_the_configuration() -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"phase": "B"}, "Phase A"),
-        ({"merge_authority": "agent"}, "owner-only"),
-        ({"merge_authority": "auto"}, "owner-only"),
+        ({"merge_authority": "agent"}, "merge_authority"),
+        ({"merge_authority": "auto"}, "merge_authority"),
+        ({"merge_authority": "always"}, "merge_authority"),
+        ({"merge_authority": None}, "merge_authority"),
+        ({"merge_authority": True}, "merge_authority"),
         ({"max_fix_rounds": 3}, "max_fix_rounds"),
         ({"max_fix_rounds": -1}, "max_fix_rounds"),
         ({"allowed_authors": []}, "allowed_authors"),
@@ -312,7 +349,7 @@ def test_other_authors_are_not_allowed(login: object) -> None:
     assert not round_lib.is_allowed_author(login, CONFIG)
 
 
-# --- The GitHub call allowlist: nothing here can merge -----------------------------------------
+# --- The GitHub call allowlist: one exact document can merge, nothing else ----------------------
 
 
 @pytest.mark.parametrize(
@@ -339,6 +376,28 @@ def test_other_authors_are_not_allowed(login: object) -> None:
         ],
         ["api", "graphql", "-f", "query=mutation { enablePullRequestAutoMerge(input: {}) { x } }"],
         ["api", "graphql", "-f", f"query={PR_QUERY}", "--method", "POST"],
+        # The merge command with anything altered is not the merge command.
+        ["pr", "merge", "12", "--auto", "--squash", "--delete-branch"],
+        ["pr", "merge", "12", "--squash", "--delete-branch", "--match-head-commit", HEAD],
+        ["pr", "merge", "12", "--auto", "--merge", "--delete-branch", "--match-head-commit", HEAD],
+        ["pr", "merge", "12", "--auto", "--rebase", "--delete-branch", "--match-head-commit", HEAD],
+        [
+            "pr",
+            "merge",
+            "12",
+            "--auto",
+            "--squash",
+            "--delete-branch",
+            "--match-head-commit",
+            "main",
+        ],
+        [*round_lib.merge_command(12, HEAD), "--admin"],
+        [*round_lib.merge_command(12, HEAD), "--repo", "someone/else"],
+        ["pr", "merge", "--auto", "--squash", "--delete-branch", "--match-head-commit", HEAD],
+        ["pr", "merge", "main", "--disable-auto"],
+        [*round_lib.disarm_command(12), "--admin"],
+        ["pr", "close", "12"],
+        ["pr", "review", "12", "--approve"],
         ["api"],
         [],
     ],
@@ -355,6 +414,9 @@ def test_forbidden_github_calls_are_refused(args: list[str]) -> None:
         ["api", "repos/sdeery14/ai-briefing/issues/12/comments?per_page=100&page=1"],
         ["api", "graphql", "-f", f"query={PR_QUERY}", "-f", "owner=o", "-F", "number=12"],
         ["api", "graphql", "-f", f"query={RESOLVE_MUTATION}", "-f", "thread=T1"],
+        ["api", "repos/sdeery14/ai-briefing/issues/12"],
+        round_lib.merge_command(12, HEAD),
+        round_lib.disarm_command(12),
     ],
 )
 def test_the_calls_the_round_makes_are_allowed(args: list[str]) -> None:
@@ -388,6 +450,47 @@ def test_no_allowed_graphql_document_can_merge_or_change_settings() -> None:
     ]
 
 
+def test_the_merge_command_is_the_projectbudget_one_with_the_reviewed_commit_named() -> None:
+    command = round_lib.merge_command(12, HEAD)
+    assert command == [
+        "pr",
+        "merge",
+        "12",
+        "--auto",
+        "--squash",
+        "--delete-branch",
+        "--match-head-commit",
+        HEAD,
+    ]
+    round_lib.check_allowed(command)
+    for never in ("--admin", "--merge", "--rebase", "--force", "--repo"):
+        assert never not in command
+    assert round_lib.disarm_command(12) == ["pr", "merge", "12", "--disable-auto"]
+
+
+@pytest.mark.parametrize("head", ["", "main", "a" * 39, "A" * 40, "a" * 41, "HEAD", "--admin"])
+def test_a_merge_without_a_full_commit_id_is_refused(head: str) -> None:
+    with pytest.raises(ForbiddenCommand):
+        round_lib.check_allowed(round_lib.merge_command(12, head))
+
+
+def test_the_merge_command_is_built_and_run_from_one_place_each() -> None:
+    sources = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted((REPO_ROOT / "scripts").glob("*.py"))
+    }
+    assert [n for n, text in sources.items() if "merge_command(" in text] == [
+        "round_lib.py",
+        "round_outcome.py",
+    ]
+    assert sources["round_outcome.py"].count("gh(merge_command(") == 1
+    assert sources["round_lib.py"].count('"--auto"') == 2  # the command and its check
+    for name, text in sources.items():
+        if name != "round_lib.py":
+            assert '"--auto"' not in text, name
+            assert '"--squash"' not in text, name
+
+
 WORKFLOW_FILES = [
     ".claude/skills/round/SKILL.md",
     ".claude/skills/round/config.json",
@@ -398,11 +501,12 @@ WORKFLOW_FILES = [
     "scripts/review_threads.py",
 ]
 
+# ``gh pr merge --auto --squash --delete-branch`` is the one merge the round makes
+# (ADR-013). It is built in round_lib.merge_command and checked by the allowlist tests
+# above, so it is not listed here. Everything below stays out of every workflow file.
 MERGE_COMMANDS = [
-    r"gh\s+pr\s+merge",
-    r"\bpr\s+merge\b",
-    r"--auto\b",
     r"--admin\b",
+    r"--disable-protection",
     r"mergePullRequest",
     r"enablePullRequestAutoMerge",
     r"pulls/[^\s\"']*/merge",
@@ -446,10 +550,13 @@ def test_the_dry_run_comes_before_any_step_that_changes_something() -> None:
     assert "gh label create" not in section
 
 
-def test_the_skill_states_that_it_never_merges() -> None:
+def test_the_skill_merges_only_through_the_checked_command() -> None:
     text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
-    assert "Never merge a pull request" in text
-    assert "The owner merges. This" in text
+    assert "uv run python scripts/round_outcome.py merge <pr>" in text
+    assert "Never merge a pull request in any other way" in text
+    assert "Never turn on auto-merge" in text
+    assert "owner-only path" in text
+    assert "ADR-013" in text
     assert "ready-for-owner" in text
     assert "needs-human" in text
 
@@ -941,7 +1048,7 @@ def failing_snapshot() -> dict[str, Any]:
     return snap(pull_request=pull(checks, merge_state="BLOCKED"))
 
 
-def test_clean_pull_request_is_ready_for_owner_and_nothing_more() -> None:
+def test_clean_pull_request_is_ready_for_owner_when_the_owner_keeps_merge_authority() -> None:
     result = decide()
     assert result["action"] == "label"
     assert result["outcome"] == "ready-for-owner"
@@ -1064,7 +1171,7 @@ def test_a_closed_pull_request_needs_nothing(state: str) -> None:
     assert result["outcome"] is None
 
 
-def test_no_outcome_ever_permits_or_performs_a_merge() -> None:
+def test_no_outcome_permits_a_merge_when_the_owner_keeps_merge_authority() -> None:
     snapshots = [
         snap(),
         failing_snapshot(),
@@ -1091,7 +1198,10 @@ def test_status_reports_protected_paths_from_the_changed_files() -> None:
     gh = FakeGh(files=[{"filename": "src/ai_briefing/x.py"}, {"filename": "AGENTS.md"}])
     result = round_outcome.status(gh, CONFIG, 12)
     assert result["protected_paths"] == [{"path": "AGENTS.md", "category": "agent-workflow"}]
+    assert result["owner_only_paths"] == [{"path": "AGENTS.md", "category": "agent-workflow"}]
+    assert result["action"] == "label"
     assert result["outcome"] == "ready-for-owner"
+    assert result["automatic_merge"] is False
     assert result["conflicts"] == "none"
     assert gh.mutations == []
 
@@ -1165,8 +1275,9 @@ def test_the_plan_sorts_issues_into_ready_blocked_and_skipped() -> None:
     assert plan["ready"] == [101, 103]
     assert plan["blocked"] == [102, 106]
     assert plan["skipped"] == [104, 105]
-    assert plan["automatic_merge"] is False
-    assert plan["merge"] == "owner-only"
+    # The plan reports the configured merge authority; planning itself merges nothing.
+    assert plan["automatic_merge"] is CONFIG.agent_may_merge
+    assert plan["merge"] == "agent-when-eligible"
     assert 107 not in [e["number"] for e in plan["issues"]]
 
 
@@ -1239,7 +1350,8 @@ def test_dry_run_from_the_command_line_changes_nothing(
     assert code == 0
     assert "#101 [ready] Package and CLI skeleton" in out
     assert "#104 [skipped]" in out
-    assert "Only the owner merges" in out
+    assert "only when every ADR-013 condition holds" in out
+    assert "the owner merges the rest" in out
     assert "ready: [101, 103]  blocked: [102, 106]  skipped: [104, 105]" in out
 
 
@@ -1534,7 +1646,9 @@ def test_an_untrusted_reply_cannot_escalate_a_trusted_thread() -> None:
 
 def test_a_resolved_p0_no_longer_escalates() -> None:
     gh = FakeGh(threads=[thread("TP0", body=P0_THREAD_BODY, resolved=True)])
-    assert round_outcome.status(gh, CONFIG, 12)["outcome"] == "ready-for-owner"
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] != "escalate"
+    assert result["stop_round"] is False
 
 
 def test_a_thread_escalated_by_a_trusted_reply_cannot_be_resolved() -> None:
@@ -1691,7 +1805,9 @@ def test_a_p0_found_in_the_fetched_part_of_a_truncated_thread_escalates_as_a_p0(
 
 def test_a_resolved_truncated_thread_does_not_stop_the_round() -> None:
     gh = FakeGh(threads=[thread(resolved=True, page_info={"hasNextPage": True})])
-    assert round_outcome.status(gh, CONFIG, 12)["outcome"] == "ready-for-owner"
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] != "escalate"
+    assert result["stop_round"] is False
 
 
 def test_the_wait_ends_at_once_on_an_incomplete_thread() -> None:
@@ -1735,3 +1851,471 @@ def test_no_fix_round_starts_while_any_thread_is_incomplete(page_info: object) -
 def test_a_fix_round_still_starts_when_every_thread_is_complete() -> None:
     gh = FakeGh(threads=[thread()])
     assert round_outcome.record_fix_round(gh, CONFIG, 12) == "recorded fix round 1 of 2"
+
+
+# --- ADR-013: when the round may merge ------------------------------------------------------
+
+OWNER_KEEPS = round_lib.parse_config({**raw_config(), "merge_authority": "owner-only"})
+PLAIN_FILES = [{"filename": "src/ai_briefing/sources/fetcher.py"}]
+
+
+def merges(gh: FakeGh) -> list[list[str]]:
+    sent = [v["args"].split() for query, v in gh.mutations if query == "pr merge"]
+    return [args for args in sent if "--disable-auto" not in args]
+
+
+def disarms(gh: FakeGh) -> list[list[str]]:
+    sent = [v["args"].split() for query, v in gh.mutations if query == "pr merge"]
+    return [args for args in sent if "--disable-auto" in args]
+
+
+def test_a_clean_pull_request_on_ordinary_paths_may_be_merged_by_the_round() -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "merge"
+    assert result["automatic_merge"] is True
+    assert result["merge"] == "agent-when-eligible"
+    assert result["outcome"] is None
+    assert result["stop_round"] is False
+    assert result["owner_only_paths"] == []
+    # Deciding is not merging: status sends nothing.
+    assert gh.mutations == []
+
+
+def test_merge_squashes_exactly_the_commit_that_was_checked_and_reviewed() -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    message = round_outcome.merge(gh, CONFIG, 12)
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    assert len(gh.mutations) == 1
+    assert HEAD in message
+
+
+def test_schemas_prompts_and_recorded_files_do_not_prevent_the_round_merging() -> None:
+    files = [
+        {"filename": "schemas/daily_briefing.v1.schema.json"},
+        {"filename": "uv.lock"},
+        {"filename": "src/ai_briefing/prompts/screening.md"},
+        {"filename": "tests/llm/recorded/screening.json"},
+    ]
+    result = round_outcome.status(FakeGh(files=files), CONFIG, 12)
+    assert result["action"] == "merge"
+    assert "touches protected paths" in " ".join(result["notes"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/adr/013-agent-merge.md",
+        "pyproject.toml",
+        "migrations/versions/0001_first.py",
+        "config/sources.yaml",
+        ".github/workflows/ci.yml",
+        ".claude/skills/round/config.json",
+        "scripts/round_outcome.py",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "deploy/compose.yml",
+        "src/ai_briefing/evaluation/metrics.py",
+    ],
+)
+def test_a_pull_request_touching_an_owner_only_path_is_left_for_the_owner(path: str) -> None:
+    gh = FakeGh(files=[*PLAIN_FILES, {"filename": path}])
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "label"
+    assert result["outcome"] == "ready-for-owner"
+    assert result["automatic_merge"] is False
+    assert "owner-only paths" in " ".join(result["notes"])
+    with pytest.raises(round_outcome.MergeRefused, match="owner-only paths"):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_a_file_renamed_out_of_an_owner_only_path_is_left_for_the_owner() -> None:
+    files = [{"filename": "docs/notes/old.md", "previous_filename": "docs/adr/009-old.md"}]
+    gh = FakeGh(files=files)
+    assert round_outcome.status(gh, CONFIG, 12)["action"] == "label"
+    with pytest.raises(round_outcome.MergeRefused):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_nothing_is_merged_when_the_owner_keeps_merge_authority() -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    result = round_outcome.status(gh, OWNER_KEEPS, 12)
+    assert result["action"] == "label"
+    assert result["outcome"] == "ready-for-owner"
+    assert result["automatic_merge"] is False
+    with pytest.raises(round_outcome.MergeRefused, match="reserves merging to the owner"):
+        round_outcome.merge(gh, OWNER_KEEPS, 12)
+    assert gh.mutations == []
+
+
+def test_a_pull_request_labelled_needs_human_is_never_merged_by_the_round() -> None:
+    # A P0, a disputed finding or a spent fix budget leaves this label, and only the owner
+    # removes it. Resolving the thread afterwards does not make the round merge.
+    gh = FakeGh(
+        files=PLAIN_FILES,
+        labels=["needs-human"],
+        threads=[thread("TP0", body=P0_THREAD_BODY, resolved=True)],
+    )
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "label"
+    assert "labelled needs-human" in " ".join(result["notes"])
+    with pytest.raises(round_outcome.MergeRefused, match="needs-human"):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+BLOCKED_PULLS = {
+    "failed check": lambda: pull(failing_snapshot_checks(), merge_state="BLOCKED"),
+    "pending check": lambda: pull(pending_checks(), merge_state="BLOCKED"),
+    "conflicts": lambda: pull(mergeable="CONFLICTING", merge_state="DIRTY"),
+    "behind main": lambda: pull(merge_state="BEHIND"),
+    "blocked by the ruleset": lambda: pull(merge_state="BLOCKED"),
+    "unstable": lambda: pull(merge_state="UNSTABLE"),
+    "unknown merge state": lambda: pull(merge_state="UNKNOWN"),
+    "already merged": lambda: pull(state="MERGED"),
+    "closed": lambda: pull(state="CLOSED"),
+    "draft": lambda: {**pull(), "isDraft": True},
+}
+
+
+def failing_snapshot_checks() -> list[dict[str, Any]]:
+    checks = passing_checks()
+    checks[1] = check("Tests (offline)", conclusion="FAILURE")
+    return checks
+
+
+@pytest.mark.parametrize("name", sorted(BLOCKED_PULLS))
+def test_a_pull_request_that_is_not_clean_is_never_merged(name: str) -> None:
+    gh = FakeGh(files=PLAIN_FILES, pull_request=BLOCKED_PULLS[name]())
+    assert round_outcome.status(gh, CONFIG, 12)["action"] != "merge"
+    with pytest.raises(round_outcome.MergeRefused):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+UNSETTLED_REVIEWS = {
+    "no review": [],
+    "review of an earlier commit": [codex_comment(OLD)],
+    "review still running": [codex_comment(status="in_progress")],
+    "review from another account": [codex_comment(login="helpful-stranger")],
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNSETTLED_REVIEWS))
+def test_a_pull_request_without_a_completed_review_of_its_head_is_never_merged(name: str) -> None:
+    gh = FakeGh(files=PLAIN_FILES, comments=UNSETTLED_REVIEWS[name])
+    assert round_outcome.status(gh, CONFIG, 12)["action"] != "merge"
+    with pytest.raises(round_outcome.MergeRefused):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+OPEN_THREADS = {
+    "unanswered finding": lambda: [thread()],
+    "disputed finding left open": lambda: [thread(replies=["sdeery14"])],
+    "P0": lambda: [thread(body=P0_THREAD_BODY)],
+    "thread from a stranger": lambda: [thread(author="helpful-stranger")],
+    "truncated thread": lambda: [thread(page_info={"hasNextPage": True})],
+}
+
+
+@pytest.mark.parametrize("name", sorted(OPEN_THREADS))
+def test_a_pull_request_with_an_open_review_thread_is_never_merged(name: str) -> None:
+    gh = FakeGh(files=PLAIN_FILES, threads=OPEN_THREADS[name]())
+    assert round_outcome.status(gh, CONFIG, 12)["action"] != "merge"
+    # A P0 or an unreadable thread escalates; any other open thread is a plain refusal.
+    escalates = name in {"P0", "truncated thread"}
+    expected = round_outcome.EscalationRequired if escalates else round_outcome.MergeRefused
+    with pytest.raises(expected):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+@pytest.mark.parametrize("kind", ["files", "labels", "comments", "threads", "pull", "rules"])
+def test_anything_that_cannot_be_read_counts_against_merging(kind: str) -> None:
+    gh = FakeGh(files=PLAIN_FILES, fail_on=[kind])
+    assert round_outcome.status(gh, CONFIG, 12)["action"] != "merge"
+    with pytest.raises((round_outcome.MergeRefused, GhError)):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_an_empty_or_enormous_file_list_is_never_merged() -> None:
+    for files in ([], [{"filename": f"src/f{n}.py"} for n in range(3000)]):
+        gh = FakeGh(files=files)
+        gh_files = files
+
+        def paged(args: Sequence[str], gh: FakeGh = gh, files: list[Any] = gh_files) -> Any:
+            # Serve the long list a page at a time, as GitHub does.
+            if "/files" in args[1]:
+                round_lib.check_allowed(args)
+                page = int(re.search(r"[?&]page=(\d+)", args[1]).group(1))  # type: ignore[union-attr]
+                return files[(page - 1) * 100 : page * 100]
+            return gh(args)
+
+        assert round_outcome.status(paged, CONFIG, 12)["action"] == "label"
+        with pytest.raises(round_outcome.MergeRefused):
+            round_outcome.merge(paged, CONFIG, 12)
+        assert gh.mutations == []
+
+
+def test_a_branch_that_moves_between_the_check_and_the_merge_is_not_merged() -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    pulls = iter([gh.pull_request, {**pull(), "headRefOid": OLD}])
+
+    def moving(args: Sequence[str]) -> Any:
+        if FakeGh.kind(args) == "pull":
+            round_lib.check_allowed(args)
+            return {"data": {"repository": {"pullRequest": next(pulls)}}}
+        return gh(args)
+
+    with pytest.raises(round_outcome.MergeRefused, match="changed while it was being checked"):
+        round_outcome.merge(moving, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_a_merge_github_does_not_confirm_is_reported_as_a_failure() -> None:
+    gh = FakeGh(files=PLAIN_FILES, fail_on=["merge"])
+    with pytest.raises(GhError, match="simulated outage"):
+        round_outcome.merge(gh, CONFIG, 12)
+
+
+def test_the_merge_command_reports_a_refusal_and_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGh(files=[{"filename": "config/sources.yaml"}])
+    monkeypatch.setattr(round_outcome, "run_gh", gh)
+    monkeypatch.setattr(round_outcome, "with_retries", lambda run: run)
+    assert round_outcome.main(["merge", "12"]) == 4
+    assert "refused" in capsys.readouterr().err
+    assert gh.mutations == []
+
+
+def test_the_merge_command_merges_an_eligible_pull_request_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    monkeypatch.setattr(round_outcome, "run_gh", gh)
+    monkeypatch.setattr(round_outcome, "with_retries", lambda run: run)
+    assert round_outcome.main(["merge", "12"]) == 0
+    assert "merged pull request 12" in capsys.readouterr().out
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+
+
+def test_merging_is_decided_only_after_every_earlier_condition() -> None:
+    # decide() reaches the merge step last. With merging allowed and an eligible change,
+    # every unfinished state still produces its usual action.
+    eligible = me_evaluate_plain()
+    cases = [
+        (failing_snapshot(), [], "fix"),
+        (snap(comments=[]), [], "wait"),
+        (snap(), [thread()], "fix"),
+        (snap(), [thread(body=P0_THREAD_BODY)], "escalate"),
+        (snap(), [thread(replies=["sdeery14"])], "label"),
+        (
+            snap(pull_request=pull(mergeable="CONFLICTING", merge_state="DIRTY")),
+            [],
+            "resolve-conflicts",
+        ),
+        (snap(pull_request=pull(state="MERGED")), [], "none"),
+    ]
+    for snapshot, threads, action in cases:
+        described = [review_threads.describe(t, CONFIG) for t in threads]
+        result = round_outcome.decide(
+            snapshot,
+            described,
+            fix_rounds=0,
+            max_fix_rounds=2,
+            labels=LABELS,
+            protected=[],
+            agent_may_merge=True,
+            eligibility=eligible,
+            pr_labels=[],
+        )
+        assert result["action"] == action, action
+        assert result["automatic_merge"] is False
+
+
+def me_evaluate_plain() -> merge_eligibility.Result:
+    return merge_eligibility.evaluate(["src/ai_briefing/sources/fetcher.py"])
+
+
+# --- ADR-013: a P0 found by the merge command's own check ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "late_threads",
+    [
+        [thread("TP0", body=P0_THREAD_BODY)],
+        [thread(page_info={"hasNextPage": True})],
+    ],
+    ids=["a P0 appears", "a thread becomes unreadable"],
+)
+def test_a_p0_that_appears_before_the_merge_escalates_and_is_not_a_plain_refusal(
+    late_threads: list[dict[str, Any]],
+) -> None:
+    clean = FakeGh(files=PLAIN_FILES)
+    assert round_outcome.status(clean, CONFIG, 12)["action"] == "merge"
+    late = FakeGh(files=PLAIN_FILES, threads=late_threads)
+    with pytest.raises(round_outcome.EscalationRequired, match="stop the round"):
+        round_outcome.merge(late, CONFIG, 12)
+    assert late.mutations == []
+
+
+def test_unreadable_threads_at_merge_time_escalate() -> None:
+    gh = FakeGh(files=PLAIN_FILES, fail_on=["threads"])
+    with pytest.raises(round_outcome.EscalationRequired):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_the_merge_command_tells_escalation_apart_from_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(round_outcome, "with_retries", lambda run: run)
+    p0 = FakeGh(files=PLAIN_FILES, threads=[thread("TP0", body=P0_THREAD_BODY)])
+    monkeypatch.setattr(round_outcome, "run_gh", p0)
+    assert round_outcome.main(["merge", "12"]) == 5
+    assert capsys.readouterr().err.startswith("escalate: ")
+    refused = FakeGh(files=PLAIN_FILES, threads=[thread()])
+    monkeypatch.setattr(round_outcome, "run_gh", refused)
+    assert round_outcome.main(["merge", "12"]) == 4
+    assert capsys.readouterr().err.startswith("refused: ")
+    assert p0.mutations == refused.mutations == []
+
+
+def test_the_skill_escalates_when_the_merge_command_does() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.strip().startswith("| `merge` |"))
+    assert "Exit 5" in row
+    assert "needs-human" in row
+    assert "end the round" in row
+    assert row.index("Exit 5") < row.index("Exit 4")
+    assert "Never retry by another route" in row
+
+
+# --- ADR-013: waiting for the merge, and branches behind main --------------------------------
+
+
+def no_sleep(_: float) -> None:
+    return None
+
+
+def test_merge_returns_only_once_github_reports_the_pull_request_merged() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=3)
+    naps: list[float] = []
+    message = round_outcome.merge(gh, CONFIG, 12, sleep=naps.append)
+    assert "merged pull request 12" in message
+    assert len(naps) == 3
+    assert gh.pull_request["state"] == "MERGED"
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    assert disarms(gh) == []
+
+
+def test_a_merge_that_never_completes_is_disarmed_and_reported() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=None)
+    with pytest.raises(round_outcome.MergeRefused, match="switched off again"):
+        round_outcome.merge(gh, CONFIG, 12, sleep=no_sleep, polls=5)
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    # Nothing is left armed to merge later, when nobody has checked it.
+    assert disarms(gh) == [round_lib.disarm_command(12)]
+    assert gh.pull_request["state"] == "OPEN"
+
+
+def test_a_merge_that_cannot_be_disarmed_says_so() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=None, fail_on=["disarm"])
+    with pytest.raises(round_outcome.MergeRefused, match="could NOT be switched off"):
+        round_outcome.merge(gh, CONFIG, 12, sleep=no_sleep, polls=2)
+
+
+def test_an_eligible_pull_request_behind_main_is_updated_not_merged() -> None:
+    gh = FakeGh(files=PLAIN_FILES, pull_request=pull(merge_state="BEHIND"))
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "update-from-main"
+    assert result["outcome"] is None
+    assert result["automatic_merge"] is False
+    assert "checks and the review of the new commit" in " ".join(result["reasons"])
+    with pytest.raises(round_outcome.MergeRefused):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_a_pull_request_behind_main_that_only_the_owner_may_merge_is_left_alone() -> None:
+    files = [{"filename": "pyproject.toml"}]
+    gh = FakeGh(files=files, pull_request=pull(merge_state="BEHIND"))
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "label"
+    assert result["outcome"] == "ready-for-owner"
+    assert "behind the default branch" in " ".join(result["notes"])
+    assert round_outcome.status(gh, OWNER_KEEPS, 12)["action"] == "label"
+
+
+def test_updating_from_main_is_the_existing_safe_merge_and_re_review() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    row = next(
+        line for line in text.splitlines() if line.strip().startswith("| `update-from-main` |")
+    )
+    assert "git fetch origin && git merge origin/main" in row
+    assert "@codex review" in row
+    assert "Never force-push" in row
+    assert "Not a fix round" in row
+
+
+def test_the_skill_never_runs_the_merge_itself() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    # The skill goes through the checked command; it does not call gh to merge.
+    assert not re.search(r"`gh\s+pr\s+merge", text)
+    assert "uv run python scripts/round_outcome.py merge <pr>" in text
+
+
+class FlakyAfterMerge:
+    """A gh whose reads of the pull request fail once the merge command has been sent."""
+
+    def __init__(self, gh: FakeGh, *, failures: int | None) -> None:
+        self.gh = gh
+        self.failures = failures  # None: every later read fails
+
+    def __call__(self, args: Sequence[str]) -> Any:
+        sent = bool(merges(self.gh))
+        if sent and FakeGh.kind(args) == "pull" and (self.failures is None or self.failures > 0):
+            round_lib.check_allowed(args)
+            if self.failures is not None:
+                self.failures -= 1
+            raise GhError("simulated outage: pull")
+        return self.gh(args)
+
+
+def test_a_merge_whose_result_cannot_be_read_is_disarmed() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=None)
+    with pytest.raises(round_outcome.MergeRefused, match="switched off again"):
+        round_outcome.merge(FlakyAfterMerge(gh, failures=None), CONFIG, 12, sleep=no_sleep, polls=4)
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    assert disarms(gh) == [round_lib.disarm_command(12)]
+
+
+def test_a_passing_outage_while_waiting_does_not_lose_a_completed_merge() -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    message = round_outcome.merge(
+        FlakyAfterMerge(gh, failures=2), CONFIG, 12, sleep=no_sleep, polls=6
+    )
+    assert "merged pull request 12" in message
+    assert disarms(gh) == []
+
+
+def test_a_merge_command_that_fails_is_disarmed_in_case_github_accepted_it() -> None:
+    gh = FakeGh(files=PLAIN_FILES, fail_on=["merge"])
+    with pytest.raises(GhError, match="switched off again"):
+        round_outcome.merge(gh, CONFIG, 12, sleep=no_sleep)
+    assert merges(gh) == []
+    assert disarms(gh) == [round_lib.disarm_command(12)]
+
+
+def test_every_unconfirmed_exit_after_the_merge_command_attempts_a_disarm() -> None:
+    source = (REPO_ROOT / "scripts" / "round_outcome.py").read_text(encoding="utf-8")
+    body = source[source.index("def merge(") : source.index("def _disarm(")]
+    after = body[body.index("gh(merge_command(") :]
+    # Two ways out without a confirmed merge, and each one disarms.
+    assert after.count("raise ") == 2
+    assert after.count("_disarm(gh, number)") == 2
