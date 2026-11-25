@@ -131,6 +131,12 @@ def test_every_terms_record_is_reviewed_approved_and_states_its_uncertainty(
     assert terms["restrictions"]
     assert isinstance(terms["uncertainties"], list)
     assert terms["uncertainties"], "say what remains uncertain, even if little"
+    # A sentence containing ": " is read by YAML as a mapping unless it is quoted.
+    for sentence in terms["restrictions"] + terms["uncertainties"]:
+        assert isinstance(sentence, str), f"quote this entry so YAML reads it as text: {sentence}"
+        assert sentence.strip()
+    assert isinstance(source["name"], str)
+    assert isinstance(source["attribution"], str)
 
 
 @each_source
