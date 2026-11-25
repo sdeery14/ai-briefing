@@ -84,14 +84,20 @@ PROTECTED: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-# ADR-013 owner-only paths: the owner's decisions and the controls themselves. A pull
-# request that touches one is merged by the owner and by nobody else. Every pattern here
-# is also in PROTECTED.
+# ADR-013 owner-only paths. A pull request that touches one is never merged by the round;
+# it is left for the owner. Every pattern here is also in PROTECTED.
+#
+# The first four entries are the exceptions the ProjectBudget round uses, carried over as
+# the owner asked: decision records, workflows, migrations and dependency changes. The
+# rest are kept from this project's own rules: the owner's source, budget and evaluation
+# decisions, deployment, and the agent's own controls.
 OWNER_ONLY: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("decisions", ("docs/rfc/**", "docs/adr/**")),
+    ("workflows", (".github/**",)),
+    ("migrations", ("migrations/**",)),
+    ("dependencies", ("pyproject.toml",)),
     ("evaluation", ("src/ai_briefing/evaluation/**", "evals/**")),
     ("models-budget-sources", ("config/**",)),
-    ("workflows", (".github/**",)),
     (
         "deployment",
         (
@@ -109,6 +115,8 @@ OWNER_ONLY: tuple[tuple[str, tuple[str, ...]], ...] = (
         (".claude/**", "scripts/**", "AGENTS.md", "CLAUDE.md", "CODEOWNERS"),
     ),
 )
+# What the first four entries above come from.
+PROJECTBUDGET_EXCEPTIONS = ("decisions", "workflows", "migrations", "dependencies")
 OWNER_ONLY_PATTERNS: frozenset[str] = frozenset(p for _, patterns in OWNER_ONLY for p in patterns)
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")

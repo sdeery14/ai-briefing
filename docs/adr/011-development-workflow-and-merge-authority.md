@@ -3,6 +3,16 @@
 **Status:** Accepted (owner, 2026-11-21)
 **Date:** 2026-11-19 (new in RFC v0.3)
 
+> **Amended on 2026-11-25 by [ADR-013](013-agent-merge-of-eligible-changes.md), at the owner's direction.**
+> The owner authorised automatic merging without the separate GitHub identity and isolated environment that Phase B below requires. Read this record with these changes:
+>
+> - **Phase A's rule that the owner merges every pull request no longer applies.** The `/round` workflow merges a pull request itself when its required checks pass, the review of its head commit is complete, every finding is resolved, and it touches no owner-only path.
+> - **Phase B's preconditions 1 to 4 and 6 are not required.** Precondition 5, the input allowlist, stays.
+> - **The owner-only paths are listed in ADR-013.** They are a subset of the protected paths in this record. The other protected paths stay protected: a change to one is declared and reviewed with care, but the round may merge it.
+> - Unchanged: the protected-path list, the input allowlist, P0 escalation, the two-fix-round limit, the review workflow, and the rule against pushing to `main`, force-pushing, bypassing protections or changing settings.
+>
+> The text below is kept as accepted on 2026-11-21, for the reasoning and for the risk it describes, which ADR-013 accepts.
+
 ## Context
 
 ProjectBudget was built with Claude Code implementing milestone issues through a `/round` skill and Codex reviewing each pull request. The owner wants the same workflow here, with stronger enforcement.

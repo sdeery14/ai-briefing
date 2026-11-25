@@ -16,14 +16,18 @@ Used by the ``/round`` skill (``.claude/skills/round/SKILL.md``).
 - ``fix``       A required check failed or a finding is unanswered, and a fix round is left.
 - ``resolve-conflicts``  The branch conflicts with the default branch.
 - ``merge``     Finished and every ADR-013 condition holds: run the ``merge`` command.
+- ``update-from-main``  Finished and eligible, but behind the default branch: bring it up to
+  date and have the new head checked and reviewed. Not a fix round.
 - ``label``     Finished. ``outcome`` is ``ready-for-owner`` or ``needs-human``.
 - ``none``      The pull request is closed.
 
 Whenever ``stop_round`` is true the round ends, whatever the action says.
 
 ``merge`` is the only way the round merges anything (ADR-013). It reads the pull request
-again, refuses unless ``status`` would say ``merge`` at that moment, and then squash-merges
-the exact commit that was checked and reviewed. Exit code 4 is a refusal: run ``status``
+again, refuses unless ``status`` would say ``merge`` at that moment, runs
+``gh pr merge --auto --squash --delete-branch`` naming the exact commit that was checked
+and reviewed, and returns only once GitHub reports the pull request merged. If the merge
+does not complete it switches auto-merge off again, so nothing merges later unchecked. Exit code 4 is a refusal: run ``status``
 again and follow it. Exit code 5 means the fresh check found a P0, or could not read the
 review threads: stop the round and tell the owner, exactly as for ``escalate``. A pull request that touches an owner-only
 path, carries the ``needs-human`` label, or is uncertain in any way is never merged by the
@@ -41,6 +45,8 @@ import argparse
 import json
 import re
 import sys
+import time
+from collections.abc import Callable
 from typing import Any
 
 import merge_eligibility
@@ -48,15 +54,16 @@ import pr_wait
 import review_threads
 from round_lib import (
     COMMENT_MUTATION,
-    MERGE_MUTATION,
     PR_QUERY,
     Config,
     Gh,
     GhError,
+    disarm_command,
     graphql,
     is_allowed_author,
     load_config,
     login_of,
+    merge_command,
     rest_pages,
     run_gh,
     with_retries,
@@ -80,6 +87,11 @@ class MergeRefused(GhError):  # noqa: N818 - reads as a statement of fact
 # GitHub's own verdict that nothing blocks the merge: checks, threads, conflicts, branch
 # up to date. Anything else (BLOCKED, BEHIND, UNSTABLE, DIRTY, UNKNOWN) is left alone.
 MERGEABLE_STATE = "CLEAN"
+# Up to date is the one thing the round can put right itself (requirement of the ruleset).
+BEHIND_STATE = "BEHIND"
+# How long to wait for GitHub to report the merge: 30 polls, 4 seconds apart.
+MERGE_POLLS = 30
+MERGE_POLL_SECONDS = 4.0
 # More changed files than this cannot be trusted to be a complete list.
 MAX_CHANGED_FILES = merge_eligibility.API_FILE_LIMIT
 
@@ -302,6 +314,15 @@ def decide(
         needs_human_label=needs_human_label,
         outsiders=len(outsiders),
     )
+    if len(blockers) == 1 and snap.get("protection") == BEHIND_STATE:
+        # Eligible in every other respect. Updating changes the head commit, so the checks
+        # and the review run again before anything is merged.
+        result.update(action="update-from-main", outcome=None)
+        result["reasons"].append(
+            "eligible to merge but behind the default branch: update it, then wait for the "
+            "checks and the review of the new commit"
+        )
+        return result
     if blockers:
         result["notes"].append("left for the owner to merge: " + "; ".join(blockers))
         return result
@@ -419,12 +440,20 @@ def record_fix_round(gh: Gh, config: Config, number: int) -> str:
     return f"recorded fix round {current} of {config.max_fix_rounds}"
 
 
-def merge(gh: Gh, config: Config, number: int) -> str:
+def merge(
+    gh: Gh,
+    config: Config,
+    number: int,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    polls: int = MERGE_POLLS,
+) -> str:
     """Squash-merge a pull request, if and only if every ADR-013 condition holds now.
 
     The decision is made again from a fresh read, never taken from an earlier ``status``.
     The merge names the commit that was checked and reviewed, so GitHub refuses it if the
-    branch has moved since.
+    branch has moved since. The call returns only when GitHub reports the pull request
+    merged, so work that depends on it starts from the merged state.
     """
     result = status(gh, config, number)
     why = "; ".join([*result.get("reasons", []), *result.get("notes", [])])
@@ -450,12 +479,24 @@ def merge(gh: Gh, config: Config, number: int) -> str:
             f"pull request {number} changed while it was being checked; wait for the "
             "checks and the review of the new commit"
         )
-    merged = graphql(gh, MERGE_MUTATION, pull=str(pull["id"]), head=head)
-    outcome = ((merged.get("mergePullRequest") or {}).get("pullRequest")) or {}
-    if outcome.get("merged") is not True:
-        raise GhError(f"GitHub did not report pull request {number} as merged")
-    commit = (outcome.get("mergeCommit") or {}).get("oid")
-    return f"merged pull request {number} at {head} as {commit}"
+    gh(merge_command(number, head))
+    for attempt in range(polls):
+        if attempt:
+            sleep(MERGE_POLL_SECONDS)
+        data = graphql(gh, PR_QUERY, owner=config.owner, name=config.name, number=number)
+        current = (data.get("repository") or {}).get("pullRequest")
+        if isinstance(current, dict) and current.get("merged") is True:
+            return f"merged pull request {number} at {head}"
+    # Not merged: do not leave it armed to merge later, when nobody has checked it.
+    try:
+        gh(disarm_command(number))
+        disarmed = "auto-merge was switched off again"
+    except GhError:
+        disarmed = "auto-merge could NOT be switched off: tell the owner"
+    raise MergeRefused(
+        f"pull request {number} did not merge within the wait; {disarmed}. "
+        "Run status again and follow it"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

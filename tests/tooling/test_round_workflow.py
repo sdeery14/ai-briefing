@@ -18,7 +18,6 @@ import round_outcome
 import round_plan
 from round_lib import (
     COMMENT_MUTATION,
-    MERGE_MUTATION,
     PR_QUERY,
     REPLY_MUTATION,
     RESOLVE_MUTATION,
@@ -181,15 +180,20 @@ class FakeGh:
     """Stands in for ``gh``. Every call is also put through the real allowlist.
 
     ``fail_on`` names the kinds of call that fail: ``rules``, ``pull``, ``threads``,
-    ``comments``, ``files``, ``suites``, ``labels``, ``merge`` or ``mutation``.
+    ``comments``, ``files``, ``suites``, ``labels``, ``merge``, ``disarm`` or ``mutation``.
+
+    A ``gh pr merge`` command is recorded in ``mutations`` like any other write, and by
+    default the pull request is merged from then on. ``merge_after`` makes GitHub take
+    that many further reads to report it; ``None`` means it never does.
     """
 
     @staticmethod
     def kind(args: Sequence[str]) -> str:
+        if args[0] == "pr":
+            return "disarm" if "--disable-auto" in args else "merge"
         if args[1] == "graphql":
             query = next(a for a in args if a.startswith("query="))[len("query=") :]
-            kinds = {PR_QUERY: "pull", THREADS_QUERY: "threads", MERGE_MUTATION: "merge"}
-            return kinds.get(query, "mutation")
+            return {PR_QUERY: "pull", THREADS_QUERY: "threads"}.get(query, "mutation")
         if re.search(r"/issues/\d+$", args[1]):
             return "labels"
         for marker_text, name in (
@@ -211,10 +215,13 @@ class FakeGh:
         threads: list[dict[str, Any]] | None = None,
         files: list[dict[str, Any]] | None = None,
         labels: Sequence[str] = (),
+        merge_after: int | None = 0,
         fail: bool = False,
         fail_on: Sequence[str] = (),
     ) -> None:
         self.labels = list(labels)
+        self.merge_after = merge_after
+        self.reads_until_merged: int | None = None
         self.pull_request = pull() if pull_request is None else pull_request
         self.rules = ruleset() if rules is None else rules
         self.comments = [codex_comment()] if comments is None else comments
@@ -229,21 +236,28 @@ class FakeGh:
         kind = self.kind(args)
         if self.fail or kind in self.fail_on:
             raise GhError(f"simulated outage: {kind}")
+        if args[0] == "pr":
+            self.mutations.append(("pr merge", {"args": " ".join(args)}))
+            if kind == "merge":
+                self.reads_until_merged = self.merge_after
+            return None
         if args[1] == "graphql":
             query = next(a for a in args if a.startswith("query="))[len("query=") :]
             variables = dict(
                 a.split("=", 1) for a in args[2:] if "=" in a and a != f"query={query}"
             )
             if query == PR_QUERY:
+                if self.reads_until_merged is not None:
+                    if self.reads_until_merged == 0:
+                        self.pull_request = {**self.pull_request, "state": "MERGED", "merged": True}
+                    else:
+                        self.reads_until_merged -= 1
                 return {"data": {"repository": {"pullRequest": self.pull_request}}}
             if query == THREADS_QUERY:
                 page = {"hasNextPage": False, "endCursor": None}
                 threads = {"pageInfo": page, "nodes": self.threads}
                 return {"data": {"repository": {"pullRequest": {"reviewThreads": threads}}}}
             self.mutations.append((query, variables))
-            if query == MERGE_MUTATION:
-                merged = {"number": 12, "merged": True, "mergeCommit": {"oid": "c" * 40}}
-                return {"data": {"mergePullRequest": {"pullRequest": merged}}}
             return {"data": {"ok": True}}
         path = args[1]
         first_page = "page=1" in path
@@ -362,10 +376,28 @@ def test_other_authors_are_not_allowed(login: object) -> None:
         ],
         ["api", "graphql", "-f", "query=mutation { enablePullRequestAutoMerge(input: {}) { x } }"],
         ["api", "graphql", "-f", f"query={PR_QUERY}", "--method", "POST"],
-        # The merge document with anything altered is not the merge document.
-        ["api", "graphql", "-f", "query=" + MERGE_MUTATION.replace("SQUASH", "MERGE")],
-        ["api", "graphql", "-f", "query=" + MERGE_MUTATION.replace(", expectedHeadOid: $head", "")],
-        ["api", "graphql", "-f", f"query={MERGE_MUTATION}", "--admin"],
+        # The merge command with anything altered is not the merge command.
+        ["pr", "merge", "12", "--auto", "--squash", "--delete-branch"],
+        ["pr", "merge", "12", "--squash", "--delete-branch", "--match-head-commit", HEAD],
+        ["pr", "merge", "12", "--auto", "--merge", "--delete-branch", "--match-head-commit", HEAD],
+        ["pr", "merge", "12", "--auto", "--rebase", "--delete-branch", "--match-head-commit", HEAD],
+        [
+            "pr",
+            "merge",
+            "12",
+            "--auto",
+            "--squash",
+            "--delete-branch",
+            "--match-head-commit",
+            "main",
+        ],
+        [*round_lib.merge_command(12, HEAD), "--admin"],
+        [*round_lib.merge_command(12, HEAD), "--repo", "someone/else"],
+        ["pr", "merge", "--auto", "--squash", "--delete-branch", "--match-head-commit", HEAD],
+        ["pr", "merge", "main", "--disable-auto"],
+        [*round_lib.disarm_command(12), "--admin"],
+        ["pr", "close", "12"],
+        ["pr", "review", "12", "--approve"],
         ["api"],
         [],
     ],
@@ -383,16 +415,8 @@ def test_forbidden_github_calls_are_refused(args: list[str]) -> None:
         ["api", "graphql", "-f", f"query={PR_QUERY}", "-f", "owner=o", "-F", "number=12"],
         ["api", "graphql", "-f", f"query={RESOLVE_MUTATION}", "-f", "thread=T1"],
         ["api", "repos/sdeery14/ai-briefing/issues/12"],
-        [
-            "api",
-            "graphql",
-            "-f",
-            f"query={MERGE_MUTATION}",
-            "-f",
-            "pull=PR_1",
-            "-f",
-            f"head={HEAD}",
-        ],
+        round_lib.merge_command(12, HEAD),
+        round_lib.disarm_command(12),
     ],
 )
 def test_the_calls_the_round_makes_are_allowed(args: list[str]) -> None:
@@ -408,44 +432,63 @@ def test_a_forbidden_call_never_reaches_gh(monkeypatch: pytest.MonkeyPatch) -> N
         round_lib.run_gh(["pr", "merge", "12"])
 
 
-def test_only_the_merge_document_merges_and_none_changes_settings() -> None:
+def test_no_allowed_graphql_document_can_merge_or_change_settings() -> None:
     forbidden = re.compile(
         r"merge|automerge|updateRef|createRef|deleteRef|ruleset|branchProtection|"
         r"dismiss|approve|submitPullRequestReview|closePullRequest|reopen",
         re.IGNORECASE,
     )
-    for document in round_lib.ALLOWED_GRAPHQL - {MERGE_MUTATION}:
+    for document in round_lib.ALLOWED_GRAPHQL:
         # "mergeable", "merged" and "mergeStateStatus" are fields that are read.
         text = re.sub(r"\bmerge(?:able|d|StateStatus)\b", "", document)
         assert not forbidden.search(text), document
     mutations = [d for d in round_lib.ALLOWED_GRAPHQL if d.lstrip().startswith("mutation")]
-    assert sorted(re.findall(r"\b(add\w+|resolve\w+|merge\w+)\(", "".join(mutations))) == [
+    assert sorted(re.findall(r"\b(add\w+|resolve\w+)\(", "".join(mutations))) == [
         "addComment",
         "addPullRequestReviewThreadReply",
-        "mergePullRequest",
         "resolveReviewThread",
     ]
 
 
-def test_the_merge_document_is_a_squash_of_one_named_commit_and_nothing_more() -> None:
-    assert MERGE_MUTATION in round_lib.ALLOWED_GRAPHQL
-    assert MERGE_MUTATION.count("mergePullRequest(") == 1
-    # The commit that was checked and reviewed is named, so a branch that moved is refused.
-    assert "expectedHeadOid: $head" in MERGE_MUTATION
-    assert "mergeMethod: SQUASH" in MERGE_MUTATION
-    for never in ("AutoMerge", "automerge", "admin", "bypass", "MERGE,", "REBASE"):
-        assert never not in MERGE_MUTATION
-
-
-def test_the_merge_document_is_sent_from_one_place_only() -> None:
-    users = [
-        path.name
-        for path in sorted((REPO_ROOT / "scripts").glob("*.py"))
-        if "MERGE_MUTATION" in path.read_text(encoding="utf-8")
+def test_the_merge_command_is_the_projectbudget_one_with_the_reviewed_commit_named() -> None:
+    command = round_lib.merge_command(12, HEAD)
+    assert command == [
+        "pr",
+        "merge",
+        "12",
+        "--auto",
+        "--squash",
+        "--delete-branch",
+        "--match-head-commit",
+        HEAD,
     ]
-    assert users == ["round_lib.py", "round_outcome.py"]
-    outcome = (REPO_ROOT / "scripts" / "round_outcome.py").read_text(encoding="utf-8")
-    assert outcome.count("graphql(gh, MERGE_MUTATION") == 1
+    round_lib.check_allowed(command)
+    for never in ("--admin", "--merge", "--rebase", "--force", "--repo"):
+        assert never not in command
+    assert round_lib.disarm_command(12) == ["pr", "merge", "12", "--disable-auto"]
+
+
+@pytest.mark.parametrize("head", ["", "main", "a" * 39, "A" * 40, "a" * 41, "HEAD", "--admin"])
+def test_a_merge_without_a_full_commit_id_is_refused(head: str) -> None:
+    with pytest.raises(ForbiddenCommand):
+        round_lib.check_allowed(round_lib.merge_command(12, head))
+
+
+def test_the_merge_command_is_built_and_run_from_one_place_each() -> None:
+    sources = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted((REPO_ROOT / "scripts").glob("*.py"))
+    }
+    assert [n for n, text in sources.items() if "merge_command(" in text] == [
+        "round_lib.py",
+        "round_outcome.py",
+    ]
+    assert sources["round_outcome.py"].count("gh(merge_command(") == 1
+    assert sources["round_lib.py"].count('"--auto"') == 2  # the command and its check
+    for name, text in sources.items():
+        if name != "round_lib.py":
+            assert '"--auto"' not in text, name
+            assert '"--squash"' not in text, name
 
 
 WORKFLOW_FILES = [
@@ -458,13 +501,12 @@ WORKFLOW_FILES = [
     "scripts/review_threads.py",
 ]
 
-MERGE_DOCUMENT_FILES = {"scripts/round_lib.py", "scripts/round_outcome.py"}
-
+# ``gh pr merge --auto --squash --delete-branch`` is the one merge the round makes
+# (ADR-013). It is built in round_lib.merge_command and checked by the allowlist tests
+# above, so it is not listed here. Everything below stays out of every workflow file.
 MERGE_COMMANDS = [
-    r"gh\s+pr\s+merge",
-    r"\bpr\s+merge\b",
-    r"--auto\b",
     r"--admin\b",
+    r"--disable-protection",
     r"mergePullRequest",
     r"enablePullRequestAutoMerge",
     r"pulls/[^\s\"']*/merge",
@@ -483,11 +525,6 @@ MERGE_COMMANDS = [
 def test_the_workflow_contains_no_merge_or_bypass_command(relative: str) -> None:
     text = (REPO_ROOT / relative).read_text(encoding="utf-8")
     for pattern in MERGE_COMMANDS:
-        # ADR-013: the one merge document lives in round_lib.py, and round_outcome.py
-        # reads its answer. The name appears nowhere else.
-        if pattern == "mergePullRequest" and relative in MERGE_DOCUMENT_FILES:
-            assert len(re.findall(pattern, text)) == 1
-            continue
         assert not re.search(pattern, text), f"{relative} contains {pattern!r}"
 
 
@@ -1822,8 +1859,14 @@ OWNER_KEEPS = round_lib.parse_config({**raw_config(), "merge_authority": "owner-
 PLAIN_FILES = [{"filename": "src/ai_briefing/sources/fetcher.py"}]
 
 
-def merges(gh: FakeGh) -> list[dict[str, str]]:
-    return [variables for query, variables in gh.mutations if query == MERGE_MUTATION]
+def merges(gh: FakeGh) -> list[list[str]]:
+    sent = [v["args"].split() for query, v in gh.mutations if query == "pr merge"]
+    return [args for args in sent if "--disable-auto" not in args]
+
+
+def disarms(gh: FakeGh) -> list[list[str]]:
+    sent = [v["args"].split() for query, v in gh.mutations if query == "pr merge"]
+    return [args for args in sent if "--disable-auto" in args]
 
 
 def test_a_clean_pull_request_on_ordinary_paths_may_be_merged_by_the_round() -> None:
@@ -1842,14 +1885,14 @@ def test_a_clean_pull_request_on_ordinary_paths_may_be_merged_by_the_round() -> 
 def test_merge_squashes_exactly_the_commit_that_was_checked_and_reviewed() -> None:
     gh = FakeGh(files=PLAIN_FILES)
     message = round_outcome.merge(gh, CONFIG, 12)
-    assert merges(gh) == [{"pull": "PR_node", "head": HEAD}]
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
     assert len(gh.mutations) == 1
     assert HEAD in message
 
 
-def test_dependencies_prompts_and_recorded_files_do_not_prevent_the_round_merging() -> None:
+def test_schemas_prompts_and_recorded_files_do_not_prevent_the_round_merging() -> None:
     files = [
-        {"filename": "pyproject.toml"},
+        {"filename": "schemas/daily_briefing.v1.schema.json"},
         {"filename": "uv.lock"},
         {"filename": "src/ai_briefing/prompts/screening.md"},
         {"filename": "tests/llm/recorded/screening.json"},
@@ -1863,6 +1906,8 @@ def test_dependencies_prompts_and_recorded_files_do_not_prevent_the_round_mergin
     "path",
     [
         "docs/adr/013-agent-merge.md",
+        "pyproject.toml",
+        "migrations/versions/0001_first.py",
         "config/sources.yaml",
         ".github/workflows/ci.yml",
         ".claude/skills/round/config.json",
@@ -2056,7 +2101,7 @@ def test_the_merge_command_merges_an_eligible_pull_request_once(
     monkeypatch.setattr(round_outcome, "with_retries", lambda run: run)
     assert round_outcome.main(["merge", "12"]) == 0
     assert "merged pull request 12" in capsys.readouterr().out
-    assert merges(gh) == [{"pull": "PR_node", "head": HEAD}]
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
 
 
 def test_merging_is_decided_only_after_every_earlier_condition() -> None:
@@ -2149,3 +2194,77 @@ def test_the_skill_escalates_when_the_merge_command_does() -> None:
     assert "end the round" in row
     assert row.index("Exit 5") < row.index("Exit 4")
     assert "Never retry by another route" in row
+
+
+# --- ADR-013: waiting for the merge, and branches behind main --------------------------------
+
+
+def no_sleep(_: float) -> None:
+    return None
+
+
+def test_merge_returns_only_once_github_reports_the_pull_request_merged() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=3)
+    naps: list[float] = []
+    message = round_outcome.merge(gh, CONFIG, 12, sleep=naps.append)
+    assert "merged pull request 12" in message
+    assert len(naps) == 3
+    assert gh.pull_request["state"] == "MERGED"
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    assert disarms(gh) == []
+
+
+def test_a_merge_that_never_completes_is_disarmed_and_reported() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=None)
+    with pytest.raises(round_outcome.MergeRefused, match="switched off again"):
+        round_outcome.merge(gh, CONFIG, 12, sleep=no_sleep, polls=5)
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    # Nothing is left armed to merge later, when nobody has checked it.
+    assert disarms(gh) == [round_lib.disarm_command(12)]
+    assert gh.pull_request["state"] == "OPEN"
+
+
+def test_a_merge_that_cannot_be_disarmed_says_so() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=None, fail_on=["disarm"])
+    with pytest.raises(round_outcome.MergeRefused, match="could NOT be switched off"):
+        round_outcome.merge(gh, CONFIG, 12, sleep=no_sleep, polls=2)
+
+
+def test_an_eligible_pull_request_behind_main_is_updated_not_merged() -> None:
+    gh = FakeGh(files=PLAIN_FILES, pull_request=pull(merge_state="BEHIND"))
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "update-from-main"
+    assert result["outcome"] is None
+    assert result["automatic_merge"] is False
+    assert "checks and the review of the new commit" in " ".join(result["reasons"])
+    with pytest.raises(round_outcome.MergeRefused):
+        round_outcome.merge(gh, CONFIG, 12)
+    assert gh.mutations == []
+
+
+def test_a_pull_request_behind_main_that_only_the_owner_may_merge_is_left_alone() -> None:
+    files = [{"filename": "pyproject.toml"}]
+    gh = FakeGh(files=files, pull_request=pull(merge_state="BEHIND"))
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "label"
+    assert result["outcome"] == "ready-for-owner"
+    assert "behind the default branch" in " ".join(result["notes"])
+    assert round_outcome.status(gh, OWNER_KEEPS, 12)["action"] == "label"
+
+
+def test_updating_from_main_is_the_existing_safe_merge_and_re_review() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    row = next(
+        line for line in text.splitlines() if line.strip().startswith("| `update-from-main` |")
+    )
+    assert "git fetch origin && git merge origin/main" in row
+    assert "@codex review" in row
+    assert "Never force-push" in row
+    assert "Not a fix round" in row
+
+
+def test_the_skill_never_runs_the_merge_itself() -> None:
+    text = (REPO_ROOT / ".claude/skills/round/SKILL.md").read_text(encoding="utf-8")
+    # The skill goes through the checked command; it does not call gh to merge.
+    assert not re.search(r"`gh\s+pr\s+merge", text)
+    assert "uv run python scripts/round_outcome.py merge <pr>" in text

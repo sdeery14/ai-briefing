@@ -4,11 +4,13 @@ Everything project-specific comes from one file, ``.claude/skills/round/config.j
 The protected-path policy is not repeated there: it is ``scripts/merge_eligibility.py``.
 
 These scripts talk to GitHub only through :func:`run_gh`, which refuses any call that is
-not on a short list: plain ``GET`` requests, two read queries and four write mutations
-(reply to a review thread, resolve one, comment on a pull request, and squash-merge a
-pull request at one exact commit). The merge mutation is sent from one place only,
-``round_outcome.merge``, after it has re-checked every condition in ADR-013. There is no
-code path here that can enable auto-merge, push, or change a setting.
+not on a short list: plain ``GET`` requests, two read queries, three write mutations
+(reply to a review thread, resolve one, comment on a pull request), and two exact
+``gh pr merge`` commands: one that squash-merges a pull request at a named commit, as the
+ProjectBudget round does, and one that switches auto-merge off again. The merge command is
+built in one place, :func:`merge_command`, and run from one place, ``round_outcome.merge``,
+after it has re-checked every condition in ADR-013. There is no code path here that can
+push, bypass a protection, or change a setting.
 """
 
 from __future__ import annotations
@@ -269,30 +271,64 @@ mutation($subject: ID!, $body: String!) {
 }
 """
 
-# Squash-merge one pull request, and only if its head is still the commit that was
-# checked and reviewed. GitHub refuses the merge if the head has moved, if a required
-# check is failing, or if a review thread is unresolved (the ruleset on main).
-MERGE_MUTATION = """
-mutation($pull: ID!, $head: GitObjectID!) {
-  mergePullRequest(input: {pullRequestId: $pull, expectedHeadOid: $head, mergeMethod: SQUASH}) {
-    pullRequest { number merged mergeCommit { oid } }
-  }
-}
-"""
-
 ALLOWED_GRAPHQL = frozenset(
-    {PR_QUERY, THREADS_QUERY, REPLY_MUTATION, RESOLVE_MUTATION, COMMENT_MUTATION, MERGE_MUTATION}
+    {PR_QUERY, THREADS_QUERY, REPLY_MUTATION, RESOLVE_MUTATION, COMMENT_MUTATION}
 )
+
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+_NUMBER = re.compile(r"[1-9][0-9]*")
+
+
+def merge_command(number: int, head: str) -> list[str]:
+    """The one way the round merges: ``gh pr merge --auto --squash --delete-branch``.
+
+    The same command the ProjectBudget round uses, with the reviewed commit named so that
+    GitHub refuses if the branch has moved. ``--auto`` merges at once when nothing blocks
+    the pull request, which is the only state the round runs it in; the ruleset on
+    ``main`` re-checks the required checks and the review threads either way.
+    """
+    return [
+        "pr",
+        "merge",
+        str(number),
+        "--auto",
+        "--squash",
+        "--delete-branch",
+        "--match-head-commit",
+        head,
+    ]
+
+
+def disarm_command(number: int) -> list[str]:
+    """Switch auto-merge off again for a pull request whose merge did not complete."""
+    return ["pr", "merge", str(number), "--disable-auto"]
+
+
+def _is_merge_command(args: Sequence[str]) -> bool:
+    if len(args) < 3 or list(args[:2]) != ["pr", "merge"] or not _NUMBER.fullmatch(args[2]):
+        return False
+    rest = list(args[3:])
+    if rest == ["--disable-auto"]:
+        return True
+    return (
+        len(rest) == 5
+        and rest[:4] == ["--auto", "--squash", "--delete-branch", "--match-head-commit"]
+        and _COMMIT.fullmatch(rest[4]) is not None
+    )
 
 
 def check_allowed(args: Sequence[str]) -> None:
     """Refuse any GitHub call the round workflow does not make.
 
-    Allowed: ``gh api <path>`` as a plain GET with no extra flags, and ``gh api graphql``
-    with one of the six documents above.
+    Allowed: ``gh api <path>`` as a plain GET with no extra flags, ``gh api graphql``
+    with one of the five documents above, and the two exact ``gh pr merge`` commands that
+    :func:`merge_command` and :func:`disarm_command` build. Any other ``gh pr merge``
+    (no named commit, an administrator override, a merge commit, a rebase) is refused.
     """
+    if _is_merge_command(args):
+        return
     if len(args) < 2 or args[0] != "api":
-        raise ForbiddenCommand("only 'gh api' calls are made by the round scripts")
+        raise ForbiddenCommand("that is not a GitHub call the round scripts make")
     if args[1] == "graphql":
         queries = [a for a in args[2:] if a.startswith("query=")]
         if len(queries) != 1 or queries[0][len("query=") :] not in ALLOWED_GRAPHQL:
@@ -323,6 +359,8 @@ def run_gh(args: Sequence[str]) -> Any:
         raise GhError(f"gh could not be run: {type(error).__name__}") from error
     if completed.returncode != 0:
         raise GhError(f"gh failed: {completed.stderr.strip()[:300]}")
+    if args[0] != "api":
+        return None  # gh pr merge prints a sentence, not JSON; the caller reads the state
     try:
         payload = json.loads(completed.stdout) if completed.stdout.strip() else None
     except json.JSONDecodeError as error:

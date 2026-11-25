@@ -372,13 +372,11 @@ def test_control_characters_in_a_file_name_do_not_evade_matching(path: str) -> N
 def test_every_owner_only_pattern_is_also_a_protected_pattern() -> None:
     protected = {p for _, patterns in me.PROTECTED for p in patterns}
     assert protected >= me.OWNER_ONLY_PATTERNS
-    # What the round may merge although it is protected: dependencies, contracts and
-    # migrations, prompts and policy, and golden and recorded test files.
+    # What the round may merge although it is protected: the lock file, contracts,
+    # prompts and policy, and golden and recorded test files.
     assert protected - me.OWNER_ONLY_PATTERNS == {
-        "pyproject.toml",
         "uv.lock",
         "schemas/**",
-        "migrations/**",
         "src/ai_briefing/prompts/**",
         "src/ai_briefing/editorial/policy/**",
         "tests/**/golden/**",
@@ -391,6 +389,9 @@ def test_every_owner_only_pattern_is_also_a_protected_pattern() -> None:
     [
         "docs/adr/013-agent-merge.md",
         "docs/rfc/AI-Briefing-RFC-v0.3.md",
+        "pyproject.toml",
+        "migrations/versions/0001_first.py",
+        "migrations/env.py",
         "config/sources.yaml",
         "config/models.yaml",
         ".github/workflows/ci.yml",
@@ -417,10 +418,8 @@ def test_an_owner_only_path_can_never_be_merged_by_the_round(path: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "pyproject.toml",
         "uv.lock",
         "schemas/daily_briefing.v1.schema.json",
-        "migrations/versions/0001_first.py",
         "src/ai_briefing/prompts/screening.md",
         "src/ai_briefing/editorial/policy/rules.py",
         "tests/llm/recorded/screening.json",
@@ -462,7 +461,6 @@ def test_the_summary_marks_owner_only_paths() -> None:
         ("tests/golden/Dockerfile", "evaluation"),
         ("tests/llm/recorded/compose.yml", "evaluation"),
         ("schemas/docker-compose.yaml", "contracts-and-migrations"),
-        ("migrations/.dockerignore", "contracts-and-migrations"),
         ("src/ai_briefing/editorial/policy/Dockerfile.dev", "prompts-and-editorial-policy"),
     ],
 )
@@ -474,6 +472,7 @@ def test_a_path_under_two_protected_patterns_is_owner_only_if_either_is(
     result = me.evaluate([path])
     assert [m.category for m in result.protected] == [first_protected_category]
     assert [(m.path, m.category) for m in result.owner_only] == [(path, "deployment")]
+    assert first_protected_category not in me.PROJECTBUDGET_EXCEPTIONS
     assert result.agent_may_merge is False
     row = next(line for line in me.summary_markdown(result).splitlines() if path in line)
     assert row.endswith("| yes |")
@@ -488,3 +487,16 @@ def test_every_path_is_checked_against_every_owner_only_pattern() -> None:
             assert me.evaluate([example]).agent_may_merge is False, pattern
     assert me.match_owner_only("src/ai_briefing/sources/fetcher.py") is None
     assert me.match_owner_only("uv.lock") is None
+
+
+def test_the_projectbudget_exceptions_are_carried_over() -> None:
+    # ProjectBudget's round never arms a merge on decision records, workflows, migrations
+    # or dependency changes. The same four are owner-only here.
+    owner_only = dict(me.OWNER_ONLY)
+    assert me.PROJECTBUDGET_EXCEPTIONS == ("decisions", "workflows", "migrations", "dependencies")
+    assert "docs/adr/**" in owner_only["decisions"]
+    assert owner_only["workflows"] == (".github/**",)
+    assert owner_only["migrations"] == ("migrations/**",)
+    assert owner_only["dependencies"] == ("pyproject.toml",)
+    for path in ("docs/adr/x.md", ".github/workflows/ci.yml", "migrations/x.py", "pyproject.toml"):
+        assert me.evaluate([path]).agent_may_merge is False, path

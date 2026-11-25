@@ -9,15 +9,21 @@
 /docs/rfc/  @sdeery14
 /docs/adr/  @sdeery14
 
+# workflows
+/.github/  @sdeery14
+
+# migrations
+/migrations/  @sdeery14
+
+# dependencies
+/pyproject.toml  @sdeery14
+
 # evaluation
 /src/ai_briefing/evaluation/  @sdeery14
 /evals/                       @sdeery14
 
 # models-budget-sources
 /config/  @sdeery14
-
-# workflows
-/.github/  @sdeery14
 
 # deployment
 /deploy/              @sdeery14
