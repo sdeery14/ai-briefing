@@ -527,7 +527,13 @@ def test_a_job_has_an_end_time_exactly_when_it_has_finished() -> None:
         "application_version": "0.0.0",
         "configuration_hash": HASH,
     }
-    assert JobRun(**fields, status=JobStatus.RUNNING).counts == {}
+    running = JobRun(**fields, status=JobStatus.RUNNING)
+    assert running.counts == {}
+    # Counts that were left out are read-only too, not a plain dictionary.
+    with pytest.raises(TypeError):
+        running.counts["documents"] = -1  # type: ignore[index]
+    assert running.counts == {}
+    assert JobRun(**fields, status=JobStatus.RUNNING).counts is not running.counts
     given = {"documents": 3}
     done = JobRun(**fields, status=JobStatus.SUCCEEDED, ended_at=NOW, counts=given)
     assert done.counts == {"documents": 3}
@@ -545,3 +551,15 @@ def test_a_job_has_an_end_time_exactly_when_it_has_finished() -> None:
         JobRun(**fields, status=JobStatus.RUNNING, ended_at=NOW)
     with pytest.raises(ValidationError, match="cannot end before it starts"):
         JobRun(**fields, status=JobStatus.FAILED, ended_at=NOW - timedelta(seconds=1))
+
+
+def test_defaults_are_validated_like_supplied_values() -> None:
+    import ai_briefing.domain.records as records
+
+    assert records.Record.model_config["validate_default"] is True
+    for name in dir(records):
+        model = getattr(records, name)
+        if isinstance(model, type) and issubclass(model, records.Record):
+            assert model.model_config["validate_default"] is True, name
+            assert model.model_config["frozen"] is True, name
+            assert model.model_config["extra"] == "forbid", name

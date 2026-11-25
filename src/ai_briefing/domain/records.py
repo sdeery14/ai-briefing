@@ -92,9 +92,13 @@ _JSON_OBJECT: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValu
 
 
 class Record(BaseModel):
-    """Base for every record: immutable, and unknown fields are an error."""
+    """Base for every record: immutable, and unknown fields are an error.
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    Defaults are validated like supplied values, so a default goes through the same
+    constraints and the same read-only wrapping.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
 
 
 # --- Sources -------------------------------------------------------------------------------
