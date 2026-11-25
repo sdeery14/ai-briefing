@@ -2268,3 +2268,54 @@ def test_the_skill_never_runs_the_merge_itself() -> None:
     # The skill goes through the checked command; it does not call gh to merge.
     assert not re.search(r"`gh\s+pr\s+merge", text)
     assert "uv run python scripts/round_outcome.py merge <pr>" in text
+
+
+class FlakyAfterMerge:
+    """A gh whose reads of the pull request fail once the merge command has been sent."""
+
+    def __init__(self, gh: FakeGh, *, failures: int | None) -> None:
+        self.gh = gh
+        self.failures = failures  # None: every later read fails
+
+    def __call__(self, args: Sequence[str]) -> Any:
+        sent = bool(merges(self.gh))
+        if sent and FakeGh.kind(args) == "pull" and (self.failures is None or self.failures > 0):
+            round_lib.check_allowed(args)
+            if self.failures is not None:
+                self.failures -= 1
+            raise GhError("simulated outage: pull")
+        return self.gh(args)
+
+
+def test_a_merge_whose_result_cannot_be_read_is_disarmed() -> None:
+    gh = FakeGh(files=PLAIN_FILES, merge_after=None)
+    with pytest.raises(round_outcome.MergeRefused, match="switched off again"):
+        round_outcome.merge(FlakyAfterMerge(gh, failures=None), CONFIG, 12, sleep=no_sleep, polls=4)
+    assert merges(gh) == [round_lib.merge_command(12, HEAD)]
+    assert disarms(gh) == [round_lib.disarm_command(12)]
+
+
+def test_a_passing_outage_while_waiting_does_not_lose_a_completed_merge() -> None:
+    gh = FakeGh(files=PLAIN_FILES)
+    message = round_outcome.merge(
+        FlakyAfterMerge(gh, failures=2), CONFIG, 12, sleep=no_sleep, polls=6
+    )
+    assert "merged pull request 12" in message
+    assert disarms(gh) == []
+
+
+def test_a_merge_command_that_fails_is_disarmed_in_case_github_accepted_it() -> None:
+    gh = FakeGh(files=PLAIN_FILES, fail_on=["merge"])
+    with pytest.raises(GhError, match="switched off again"):
+        round_outcome.merge(gh, CONFIG, 12, sleep=no_sleep)
+    assert merges(gh) == []
+    assert disarms(gh) == [round_lib.disarm_command(12)]
+
+
+def test_every_unconfirmed_exit_after_the_merge_command_attempts_a_disarm() -> None:
+    source = (REPO_ROOT / "scripts" / "round_outcome.py").read_text(encoding="utf-8")
+    body = source[source.index("def merge(") : source.index("def _disarm(")]
+    after = body[body.index("gh(merge_command(") :]
+    # Two ways out without a confirmed merge, and each one disarms.
+    assert after.count("raise ") == 2
+    assert after.count("_disarm(gh, number)") == 2

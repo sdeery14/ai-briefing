@@ -479,24 +479,37 @@ def merge(
             f"pull request {number} changed while it was being checked; wait for the "
             "checks and the review of the new commit"
         )
-    gh(merge_command(number, head))
+    # From here GitHub may hold an armed merge. Every exit that has not seen the pull
+    # request merged switches auto-merge off again, so nothing merges later unchecked.
+    try:
+        gh(merge_command(number, head))
+    except GhError as error:
+        raise GhError(
+            f"the merge command for pull request {number} failed ({error}); {_disarm(gh, number)}"
+        ) from error
     for attempt in range(polls):
         if attempt:
             sleep(MERGE_POLL_SECONDS)
-        data = graphql(gh, PR_QUERY, owner=config.owner, name=config.name, number=number)
+        try:
+            data = graphql(gh, PR_QUERY, owner=config.owner, name=config.name, number=number)
+        except GhError:
+            continue  # one unreadable poll is not an answer; keep asking
         current = (data.get("repository") or {}).get("pullRequest")
         if isinstance(current, dict) and current.get("merged") is True:
             return f"merged pull request {number} at {head}"
-    # Not merged: do not leave it armed to merge later, when nobody has checked it.
+    raise MergeRefused(
+        f"pull request {number} was not seen to merge within the wait; "
+        f"{_disarm(gh, number)}. Run status again and follow it"
+    )
+
+
+def _disarm(gh: Gh, number: int) -> str:
+    """Switch auto-merge off for a pull request, and say whether that worked."""
     try:
         gh(disarm_command(number))
-        disarmed = "auto-merge was switched off again"
     except GhError:
-        disarmed = "auto-merge could NOT be switched off: tell the owner"
-    raise MergeRefused(
-        f"pull request {number} did not merge within the wait; {disarmed}. "
-        "Run status again and follow it"
-    )
+        return "auto-merge could NOT be switched off: check the pull request and tell the owner"
+    return "auto-merge was switched off again"
 
 
 def main(argv: list[str] | None = None) -> int:
