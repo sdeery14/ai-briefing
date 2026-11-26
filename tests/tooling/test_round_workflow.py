@@ -1882,6 +1882,16 @@ def test_a_clean_pull_request_on_ordinary_paths_may_be_merged_by_the_round() -> 
     assert gh.mutations == []
 
 
+def test_a_pull_request_that_adds_a_dependency_may_be_merged_by_the_round() -> None:
+    files = [*PLAIN_FILES, {"filename": "pyproject.toml"}, {"filename": "uv.lock"}]
+    gh = FakeGh(files=files)
+    result = round_outcome.status(gh, CONFIG, 12)
+    assert result["action"] == "merge"
+    assert result["owner_only_paths"] == []
+    assert "touches protected paths (dependencies)" in " ".join(result["notes"])
+    assert "merged pull request 12" in round_outcome.merge(gh, CONFIG, 12)
+
+
 def test_merge_squashes_exactly_the_commit_that_was_checked_and_reviewed() -> None:
     gh = FakeGh(files=PLAIN_FILES)
     message = round_outcome.merge(gh, CONFIG, 12)
@@ -1906,7 +1916,6 @@ def test_schemas_prompts_and_recorded_files_do_not_prevent_the_round_merging() -
     "path",
     [
         "docs/adr/013-agent-merge.md",
-        "pyproject.toml",
         "migrations/versions/0001_first.py",
         "config/sources.yaml",
         ".github/workflows/ci.yml",
@@ -2243,7 +2252,7 @@ def test_an_eligible_pull_request_behind_main_is_updated_not_merged() -> None:
 
 
 def test_a_pull_request_behind_main_that_only_the_owner_may_merge_is_left_alone() -> None:
-    files = [{"filename": "pyproject.toml"}]
+    files = [{"filename": "migrations/versions/0001_first.py"}]
     gh = FakeGh(files=files, pull_request=pull(merge_state="BEHIND"))
     result = round_outcome.status(gh, CONFIG, 12)
     assert result["action"] == "label"

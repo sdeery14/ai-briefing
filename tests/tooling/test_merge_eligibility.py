@@ -372,9 +372,10 @@ def test_control_characters_in_a_file_name_do_not_evade_matching(path: str) -> N
 def test_every_owner_only_pattern_is_also_a_protected_pattern() -> None:
     protected = {p for _, patterns in me.PROTECTED for p in patterns}
     assert protected >= me.OWNER_ONLY_PATTERNS
-    # What the round may merge although it is protected: the lock file, contracts,
+    # What the round may merge although it is protected: dependencies, contracts,
     # prompts and policy, and golden and recorded test files.
     assert protected - me.OWNER_ONLY_PATTERNS == {
+        "pyproject.toml",
         "uv.lock",
         "schemas/**",
         "src/ai_briefing/prompts/**",
@@ -389,7 +390,6 @@ def test_every_owner_only_pattern_is_also_a_protected_pattern() -> None:
     [
         "docs/adr/013-agent-merge.md",
         "docs/rfc/AI-Briefing-RFC-v0.3.md",
-        "pyproject.toml",
         "migrations/versions/0001_first.py",
         "migrations/env.py",
         "config/sources.yaml",
@@ -418,6 +418,7 @@ def test_an_owner_only_path_can_never_be_merged_by_the_round(path: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "pyproject.toml",
         "uv.lock",
         "schemas/daily_briefing.v1.schema.json",
         "src/ai_briefing/prompts/screening.md",
@@ -490,13 +491,27 @@ def test_every_path_is_checked_against_every_owner_only_pattern() -> None:
 
 
 def test_the_projectbudget_exceptions_are_carried_over() -> None:
-    # ProjectBudget's round never arms a merge on decision records, workflows, migrations
-    # or dependency changes. The same four are owner-only here.
+    # ProjectBudget's round never arms a merge on decision records, workflows or
+    # migrations. The same three are owner-only here.
     owner_only = dict(me.OWNER_ONLY)
-    assert me.PROJECTBUDGET_EXCEPTIONS == ("decisions", "workflows", "migrations", "dependencies")
+    assert me.PROJECTBUDGET_EXCEPTIONS == ("decisions", "workflows", "migrations")
     assert "docs/adr/**" in owner_only["decisions"]
     assert owner_only["workflows"] == (".github/**",)
     assert owner_only["migrations"] == ("migrations/**",)
-    assert owner_only["dependencies"] == ("pyproject.toml",)
-    for path in ("docs/adr/x.md", ".github/workflows/ci.yml", "migrations/x.py", "pyproject.toml"):
+    for path in ("docs/adr/x.md", ".github/workflows/ci.yml", "migrations/x.py"):
         assert me.evaluate([path]).agent_may_merge is False, path
+
+
+def test_a_dependency_change_may_be_merged_by_the_round() -> None:
+    # The owner dropped ProjectBudget's dependency exception on 2026-11-26. A change to
+    # pyproject.toml is still reported as protected, so the pull request must declare it.
+    assert "dependencies" not in dict(me.OWNER_ONLY)
+    result = me.evaluate(["pyproject.toml", "uv.lock", "src/ai_briefing/storage/schema.py"])
+    assert [m.path for m in result.protected] == ["pyproject.toml", "uv.lock"]
+    assert {m.category for m in result.protected} == {"dependencies"}
+    assert result.owner_only == ()
+    assert result.agent_may_merge is True
+    # A dependency change that also adds a migration is still the owner's.
+    with_migration = me.evaluate(["pyproject.toml", "migrations/versions/0001_first.py"])
+    assert [m.category for m in with_migration.owner_only] == ["migrations"]
+    assert with_migration.agent_may_merge is False

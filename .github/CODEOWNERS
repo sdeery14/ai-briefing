@@ -15,9 +15,6 @@
 # migrations
 /migrations/  @sdeery14
 
-# dependencies
-/pyproject.toml  @sdeery14
-
 # evaluation
 /src/ai_briefing/evaluation/  @sdeery14
 /evals/                       @sdeery14
