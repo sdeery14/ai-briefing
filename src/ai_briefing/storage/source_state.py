@@ -1,7 +1,8 @@
-"""A source's operational state: feed cache validators, last success, failure count.
+"""Current state that is updated in place: a source's feed cache validators, last success
+and failure count, and a document's current title.
 
-This is working state, not history, so it is updated in place. It is kept apart from
-``repositories``, which never updates anything.
+None of this is history. It is kept apart from ``repositories``, which never updates
+anything.
 """
 
 from __future__ import annotations
@@ -58,3 +59,14 @@ def record_fetch_failure(connection: Connection, source_id: str) -> None:
         .where(table.c.id == source_id)
         .values(consecutive_failures=table.c.consecutive_failures + 1)
     )
+
+
+def record_title(connection: Connection, document_id: int, title: str) -> None:
+    """Keep a document's title as its source now gives it.
+
+    RFC §5 puts the title on the document, which has a stable identity and is not a
+    history record. A corrected headline replaces the earlier one; the earlier wording is
+    not kept.
+    """
+    table = schema.source_documents
+    connection.execute(update(table).where(table.c.id == document_id).values(title=title))

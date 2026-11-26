@@ -28,9 +28,8 @@ from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import BodySource, FetchStatus, SourceKind, SourceMode
 from ai_briefing.domain.records import DocumentObservation, Source, SourceDocument
-from ai_briefing.sources.feeds import FeedEntry, FeedError, parse_feed
+from ai_briefing.sources.feeds import FeedEntry, parse_feed
 from ai_briefing.sources.fetcher import Fetcher, FetchResult
-from ai_briefing.sources.network import FetchError
 from ai_briefing.sources.text import page_to_text
 from ai_briefing.storage import repositories, source_state
 from ai_briefing.storage.jobs import JobOutcome, run_job, utc_now
@@ -47,9 +46,13 @@ class _Fetched:
     error: str | None = None
 
 
-def content_hash(title: str, summary: str | None, body: str | None) -> str:
-    """A hash of exactly what is stored for an observation."""
-    payload = json.dumps([title, summary, body], ensure_ascii=False, separators=(",", ":"))
+def content_hash(summary: str | None, body: str | None) -> str:
+    """A hash of exactly what an observation stores: its summary and its body text.
+
+    The title is not part of it. The title is stored on the document, so a hash that
+    covered it would change with nothing in the observation to show why.
+    """
+    payload = json.dumps([summary, body], ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -111,8 +114,11 @@ def collect(
                 )
                 if not item.result.not_modified:
                     item.entries = parse_feed(item.result.body, feed_url=item.result.final_url)
-            except (FetchError, FeedError) as error:
-                # One source failing never fails the run. It is counted and recorded.
+            except Exception as error:
+                # One source failing never fails the run, whatever went wrong with it:
+                # a refused or failed fetch, a feed that will not parse, or anything else
+                # that its content provoked. It is counted and recorded, and the other
+                # sources are still collected.
                 item.result = None
                 item.error = f"{type(error).__name__}: {error}"[:300]
 
@@ -184,23 +190,31 @@ def _store(
             ),
         )
         added_document = 1
+    elif document.title != entry.title and document.id is not None:
+        # A corrected headline. The document keeps the title its source now gives it.
+        source_state.record_title(connection, document.id, entry.title)
     summary, body = stored_text(source, entry)
-    return added_document, _observe(connection, document, entry.title, summary, body, now)
+    return added_document, _observe(connection, document, summary, body, now)
 
 
 def _observe(
     connection: Connection,
     document: SourceDocument,
-    title: str,
     summary: str | None,
     body: str | None,
     now: datetime,
 ) -> int:
-    """Add an observation unless the newest one already holds exactly this content."""
+    """Add an observation unless the newest one of its kind already holds this content.
+
+    A page-backed document is observed twice over: from its feed, without article text,
+    and from its page, with it. Each is compared with the last observation of the same
+    kind, so collecting the feed again after the page was read adds nothing, and neither
+    does reading the unchanged page again.
+    """
     if document.id is None:
         raise ValueError("the document has not been stored")
-    digest = content_hash(title, summary, body)
-    latest = repositories.latest_observation(connection, document.id)
+    digest = content_hash(summary, body)
+    latest = repositories.latest_observation(connection, document.id, with_body=body is not None)
     if latest is not None and latest.content_hash == digest:
         return 0
     repositories.add(
@@ -264,7 +278,7 @@ def store_body(
     """
     if not may_fetch_body(source, document):
         raise PermissionError(f"{source.id} does not permit storing article text for this link")
-    return _observe(connection, document, document.title, None, text, now)
+    return _observe(connection, document, None, text, now)
 
 
 def _decode(result: FetchResult) -> str:

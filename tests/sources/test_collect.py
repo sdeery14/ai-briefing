@@ -14,6 +14,7 @@ from sqlalchemy import Engine, func, select
 from ai_briefing.domain.records import Source, SourceDocument
 from ai_briefing.runtime import cli
 from ai_briefing.sources import collect as collecting
+from ai_briefing.sources import feeds as feeds_module
 from ai_briefing.sources.collect import collect, fetch_body, may_fetch_body, store_body
 from ai_briefing.sources.fetcher import Fetcher
 from ai_briefing.sources.network import Blocked, FetchError
@@ -197,6 +198,62 @@ def test_an_edited_entry_adds_an_observation_and_keeps_the_earlier_one(engine: E
     assert seen[0]["content_hash"] != seen[1]["content_hash"]
 
 
+def test_a_corrected_title_is_kept_on_the_document(engine: Engine) -> None:
+    for hour, mode_source in ((8, SUMMARY), (10, METADATA)):
+        host = f"{mode_source.id}.example.org"
+        first = {mode_source.url: ok(rss(host, ("x1", "Modle scores 90", TEXT)))}
+        fixed = {mode_source.url: ok(rss(host, ("x1", "Model scores 90", TEXT)))}
+        early, late = NOW.replace(hour=hour), NOW.replace(hour=hour + 1)
+        run(engine, FakeTransport(first), catalogue=(mode_source,), at=early)
+        outcome = run(engine, FakeTransport(fixed), catalogue=(mode_source,), at=late)
+        document, seen = stored(engine, mode_source.id)
+        assert document.title == "Model scores 90"  # what a reader is shown from now on
+        assert outcome.counts["documents_added"] == 0
+        # The title is not part of an observation, so a title-only edit adds none. Before,
+        # it added an observation that held nothing new.
+        assert outcome.counts["observations_added"] == 0
+        assert len(seen) == 1
+
+
+def test_the_content_hash_covers_what_an_observation_stores_and_nothing_else() -> None:
+    assert collecting.content_hash("s", "b") == collecting.content_hash("s", "b")
+    assert collecting.content_hash("s", "b") != collecting.content_hash("s", "c")
+    assert collecting.content_hash("s", None) != collecting.content_hash(None, "s")
+    assert len(collecting.content_hash(None, None)) == 64
+
+
+def test_a_malformed_link_in_one_feed_costs_neither_its_feed_nor_the_others(engine: Engine) -> None:
+    broken = (
+        b'<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>'
+        b"<item><title>Broken</title><link>https://[broken/path</link>"
+        b'<guid isPermaLink="false">b</guid></item>'
+        b"<item><title>Good</title><link>https://fullpage.example.org/ok</link></item>"
+        b"</channel></rss>"
+    )
+    outcome = run(engine, FakeTransport({**feeds(), FULL_PAGE.url: ok(broken)}))
+    assert outcome.counts["sources_failed"] == 0
+    assert outcome.counts["documents_added"] == 4  # three other sources, and the good entry
+    document, _ = stored(engine, "fullpage")
+    assert document.title == "Good"
+
+
+def test_an_unexpected_error_in_one_source_does_not_fail_the_run(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = feeds_module.parse_feed
+
+    def parse(data: bytes, *, feed_url: str) -> list[feeds_module.FeedEntry]:
+        if "fullpage" in feed_url:
+            raise RuntimeError("something nobody expected")
+        return real(data, feed_url=feed_url)
+
+    monkeypatch.setattr(collecting, "parse_feed", parse)
+    outcome = run(engine, FakeTransport(feeds()))
+    assert outcome.ran is True
+    assert outcome.counts["sources_failed"] == 1
+    assert outcome.counts["documents_added"] == 3
+
+
 def test_a_new_entry_is_added_beside_the_old_ones(engine: Engine) -> None:
     run(engine, FakeTransport(feeds()), catalogue=(SUMMARY,))
     grown = {
@@ -358,6 +415,51 @@ def test_an_article_page_on_the_sources_own_host_is_fetched_as_text(engine: Engi
         latest = repositories.latest_observation(connection, document.id)
     assert latest is not None
     assert latest.body_text == text
+
+
+def test_collecting_and_reading_the_page_again_and_again_adds_nothing(engine: Engine) -> None:
+    # A page-backed document has an observation from its feed and one from its page.
+    # Unchanged input must not keep adding one of each.
+    feed = {FULL_PAGE.url: ok(rss("fullpage.example.org", ("p1", "Page one", TEXT)))}
+    page_url = "https://fullpage.example.org/p1"
+
+    def cycle(hour: int) -> tuple[int, int]:
+        at = NOW.replace(hour=hour)
+        transport = FakeTransport({**feed, page_url: ok(PAGE)})
+        fetcher = make_fetcher(transport)
+        outcome = run(engine, transport, catalogue=(FULL_PAGE,), at=at, fetcher=fetcher)
+        document, _ = stored(engine, "fullpage")
+        text = fetch_body(fetcher, FULL_PAGE, document)
+        assert text is not None
+        with engine.begin() as connection:
+            added = store_body(connection, FULL_PAGE, document, text, now=at)
+        return outcome.counts["observations_added"], added
+
+    assert cycle(11) == (1, 1)  # first time: one from the feed, one from the page
+    assert cycle(12) == (0, 0)
+    assert cycle(13) == (0, 0)
+    _, seen = stored(engine, "fullpage")
+    assert [o["body_text"] is not None for o in seen] == [False, True]
+
+
+def test_a_changed_page_adds_an_observation_and_a_purged_one_is_still_recognised(
+    engine: Engine,
+) -> None:
+    document = page_document(engine)
+    assert document.id is not None
+    with engine.begin() as connection:
+        assert store_body(connection, FULL_PAGE, document, "First text.", now=NOW) == 1
+        assert store_body(connection, FULL_PAGE, document, "Edited text.", now=LATER) == 1
+        # The retention purge nulls the text and keeps the hash.
+        connection.execute(
+            schema.document_observations.update().values(body_text=None, body_purged_at=LATER)
+        )
+        # The same text again is still recognised from its hash, so nothing is added.
+        assert store_body(connection, FULL_PAGE, document, "Edited text.", now=LATER) == 0
+        latest = repositories.latest_observation(connection, document.id, with_body=True)
+        assert latest is not None
+        assert latest.body_purged_at == LATER
+        assert repositories.latest_observation(connection, document.id, with_body=False) is None
 
 
 @pytest.mark.parametrize(

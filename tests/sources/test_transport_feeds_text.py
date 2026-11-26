@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import http.server
 import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +18,12 @@ from ai_briefing.sources.catalogue import CONFIG_ENV, CatalogueError, load_catal
 from ai_briefing.sources.feeds import FeedError, parse_feed
 from ai_briefing.sources.network import FetchError
 from ai_briefing.sources.text import html_to_text, page_to_text
-from ai_briefing.sources.transport import HopRequest, HttpTransport, ResponseTooLarge
+from ai_briefing.sources.transport import (
+    HopRequest,
+    HttpTransport,
+    RequestTimedOut,
+    ResponseTooLarge,
+)
 
 from .conftest import atom, rss
 
@@ -34,6 +40,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", "/target")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if self.path == "/trickle":
+            # A byte every 50 ms: never silent for long, and never finished.
+            self.send_response(200)
+            self.send_header("Content-Length", "400")
+            self.end_headers()
+            try:
+                for _ in range(400):
+                    self.wfile.write(b"z")
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass  # the client gave up, as it should
             return
         body = b"x" * 5000 if self.path == "/big" else b"hello"
         self.send_response(200)
@@ -99,6 +118,19 @@ def test_the_transport_stops_at_the_size_limit(server: int, path: str) -> None:
     assert len(HttpTransport().send(hop(server, "/big", max_bytes=5000)).body) == 5000
 
 
+def test_a_response_that_trickles_in_is_cut_off_at_the_time_limit(server: int) -> None:
+    # Each byte arrives well inside the socket's own timeout, so only an overall deadline
+    # stops this. Unlimited, the response would take twenty seconds.
+    started = time.monotonic()
+    with pytest.raises(RequestTimedOut, match=r"longer than 0\.5 seconds"):
+        HttpTransport().send(hop(server, "/trickle", timeout_seconds=0.5))
+    assert time.monotonic() - started < 3
+
+
+def test_a_request_that_finishes_in_time_is_not_cut_off(server: int) -> None:
+    assert HttpTransport().send(hop(server, "/feed", timeout_seconds=5.0)).body == b"hello"
+
+
 def test_a_connection_that_cannot_be_made_is_a_fetch_error(server: int) -> None:
     closed = hop(1, "/feed", timeout_seconds=1.0)
     with pytest.raises(FetchError, match="could not connect"):
@@ -155,6 +187,22 @@ def test_an_entry_without_a_link_or_a_title_is_skipped() -> None:
     (entry,) = parse_feed(data, feed_url=FEED_URL)
     assert entry.title == "Good"
     assert entry.external_id == "https://feeds.example.org/ok"  # the link, when there is no id
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["https://[broken/path", "https://[::1/x", "http://[", "https://exa mple.org/a"],
+)
+def test_an_entry_with_an_unparseable_link_is_skipped_and_the_rest_are_kept(link: str) -> None:
+    data = (
+        '<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>'
+        f'<item><title>Broken</title><link>{link}</link><guid isPermaLink="false">b</guid></item>'
+        "<item><title>Good</title><link>https://feeds.example.org/ok</link></item>"
+        "</channel></rss>"
+    ).encode()
+    titles = [entry.title for entry in parse_feed(data, feed_url=FEED_URL)]
+    assert "Good" in titles
+    assert all(entry.url.startswith("https://") for entry in parse_feed(data, feed_url=FEED_URL))
 
 
 def test_markup_and_instructions_in_a_feed_become_inert_text() -> None:

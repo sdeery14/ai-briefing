@@ -254,14 +254,21 @@ def find_document(
     return None if row is None else SourceDocument.model_validate(dict(row))
 
 
-def latest_observation(connection: Connection, document_id: int) -> DocumentObservation | None:
-    """The newest observation of a document, if any."""
+def latest_observation(
+    connection: Connection, document_id: int, *, with_body: bool | None = None
+) -> DocumentObservation | None:
+    """The newest observation of a document, if any.
+
+    ``with_body`` narrows it to observations that carry article text (or carried it before
+    the retention purge), or to those that never did. A page-backed document has both
+    kinds, one from the feed and one from the page, and each is compared with its own.
+    """
     table = schema.document_observations
-    row = (
-        connection.execute(
-            select(table).where(table.c.document_id == document_id).order_by(table.c.id.desc())
-        )
-        .mappings()
-        .first()
-    )
+    query = select(table).where(table.c.document_id == document_id)
+    had_body = table.c.body_text.is_not(None) | table.c.body_purged_at.is_not(None)
+    if with_body is True:
+        query = query.where(had_body)
+    elif with_body is False:
+        query = query.where(~had_body)
+    row = connection.execute(query.order_by(table.c.id.desc())).mappings().first()
     return None if row is None else DocumentObservation.model_validate(dict(row))

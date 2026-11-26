@@ -50,11 +50,13 @@ def _text(value: object) -> str | None:
 def _web_url(candidate: object, base: str) -> str | None:
     if not isinstance(candidate, str) or not candidate.strip():
         return None
-    absolute, _fragment = urldefrag(urljoin(base, candidate.strip()))
-    parts = urlsplit(absolute)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        return None
-    return absolute
+    try:
+        absolute, _fragment = urldefrag(urljoin(base, candidate.strip()))
+        parts = urlsplit(absolute)
+        usable = parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return None  # a link that cannot be parsed, such as an unclosed "[" in the host
+    return absolute if usable else None
 
 
 def parse_feed(data: bytes, *, feed_url: str) -> list[FeedEntry]:
@@ -72,21 +74,30 @@ def parse_feed(data: bytes, *, feed_url: str) -> list[FeedEntry]:
         raise FeedError("the response is not an RSS or Atom feed")
     entries: list[FeedEntry] = []
     for entry in parsed.entries:
-        url = _web_url(entry.get("link"), feed_url)
-        title = _text(entry.get("title"))
-        if url is None or title is None:
+        try:
+            candidate = _entry(entry, feed_url)
+        except (ValueError, TypeError, AttributeError, KeyError, IndexError):
+            # One entry the feed got wrong is skipped. It must not cost the other entries,
+            # or the other sources.
             continue
-        external_id = entry.get("id") if isinstance(entry.get("id"), str) else None
-        contents = entry.get("content") or []
-        content = _text(contents[0].get("value")) if contents else None
-        entries.append(
-            FeedEntry(
-                external_id=(external_id or url).strip(),
-                url=url,
-                title=" ".join(title.split()),
-                published_at=_published(entry),
-                summary=_text(entry.get("summary")),
-                content=content,
-            )
-        )
+        if candidate is not None:
+            entries.append(candidate)
     return entries
+
+
+def _entry(entry: feedparser.FeedParserDict, feed_url: str) -> FeedEntry | None:
+    url = _web_url(entry.get("link"), feed_url)
+    title = _text(entry.get("title"))
+    if url is None or title is None:
+        return None
+    external_id = entry.get("id") if isinstance(entry.get("id"), str) else None
+    contents = entry.get("content") or []
+    content = _text(contents[0].get("value")) if contents else None
+    return FeedEntry(
+        external_id=(external_id or url).strip(),
+        url=url,
+        title=" ".join(title.split()),
+        published_at=_published(entry),
+        summary=_text(entry.get("summary")),
+        content=content,
+    )

@@ -112,7 +112,10 @@ class Fetcher:
                 location = response.headers.get("location")
                 if not location:
                     raise FetchError(f"{current} redirected without saying where")
-                current = urljoin(current, location)
+                try:
+                    current = urljoin(current, location)
+                except ValueError as error:
+                    raise FetchError(f"{current} redirected to an unusable address") from error
                 continue
             if response.status == 304:
                 return FetchResult(not_modified=True, final_url=current)

@@ -266,6 +266,12 @@ def test_a_redirect_without_a_location_is_an_error() -> None:
         fetch(FakeTransport({FEED: HopResponse(status=302)}))
 
 
+@pytest.mark.parametrize("location", ["https://[broken/path", "https://[::1/x", "//["])
+def test_a_redirect_to_an_unparseable_address_is_a_fetch_error(location: str) -> None:
+    with pytest.raises(FetchError):
+        fetch(FakeTransport({FEED: redirect(location)}))
+
+
 def test_a_redirect_off_the_allowed_hosts_is_refused() -> None:
     elsewhere = "https://elsewhere.example.com/feed.xml"
     transport = FakeTransport({FEED: redirect(elsewhere)})
