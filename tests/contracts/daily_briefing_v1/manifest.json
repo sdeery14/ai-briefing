@@ -1,0 +1,216 @@
+{
+  "_comment": "Example documents for daily_briefing.v1. All content is synthetic and written for this project; it may be reused under the repository's Apache-2.0 licence. 'at' is the JSON pointer of the failing value and 'keyword' the schema rule it breaks.",
+  "schema": "schemas/daily_briefing.v1.schema.json",
+  "valid": [
+    {
+      "file": "valid/ready_typical.json",
+      "shows": "A normal day: three stories, one watch item and a concept note."
+    },
+    {
+      "file": "valid/ready_minimal.json",
+      "shows": "The smallest ready briefing: one story, an empty watchlist, no concept note."
+    },
+    {
+      "file": "valid/ready_at_limits.json",
+      "shows": "The largest briefing allowed: five stories and ten watch items. An http link is allowed."
+    },
+    {
+      "file": "valid/ready_watchlist_only.json",
+      "shows": "A quiet day: no story qualified, but there is something to watch."
+    },
+    {
+      "file": "valid/degraded.json",
+      "shows": "Something was skipped, and degraded_reasons says what."
+    },
+    {
+      "file": "valid/empty.json",
+      "shows": "Nothing to report. A consumer omits the section."
+    },
+    {
+      "file": "valid/ready_text_with_markup.json",
+      "shows": "Markup and instructions inside text are valid data. The schema does not sanitise; the consumer must escape."
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/missing_schema_version.json",
+      "shows": "schema_version is required.",
+      "at": "",
+      "keyword": "required"
+    },
+    {
+      "file": "invalid/wrong_schema_version.json",
+      "shows": "A different contract version is not accepted.",
+      "at": "/schema_version",
+      "keyword": "const"
+    },
+    {
+      "file": "invalid/unknown_top_level_field.json",
+      "shows": "Unknown fields are rejected. 'lesson' is reserved for a later version.",
+      "at": "",
+      "keyword": "additionalProperties"
+    },
+    {
+      "file": "invalid/unknown_status.json",
+      "shows": "status is one of ready, degraded, empty.",
+      "at": "/status",
+      "keyword": "enum"
+    },
+    {
+      "file": "invalid/local_date_not_a_date.json",
+      "shows": "local_date is a calendar date, YYYY-MM-DD.",
+      "at": "/local_date",
+      "keyword": "pattern"
+    },
+    {
+      "file": "invalid/generated_at_not_utc.json",
+      "shows": "generated_at is in UTC and ends in Z.",
+      "at": "/generated_at",
+      "keyword": "pattern"
+    },
+    {
+      "file": "invalid/six_stories.json",
+      "shows": "At most five stories.",
+      "at": "/stories",
+      "keyword": "maxItems"
+    },
+    {
+      "file": "invalid/eleven_watch_items.json",
+      "shows": "At most ten watch items.",
+      "at": "/watchlist",
+      "keyword": "maxItems"
+    },
+    {
+      "file": "invalid/ready_with_degraded_reasons.json",
+      "shows": "A ready briefing has no degraded reasons.",
+      "at": "/degraded_reasons",
+      "keyword": "maxItems"
+    },
+    {
+      "file": "invalid/degraded_without_reasons.json",
+      "shows": "A degraded briefing says why.",
+      "at": "/degraded_reasons",
+      "keyword": "minItems"
+    },
+    {
+      "file": "invalid/empty_with_a_story.json",
+      "shows": "An empty briefing has no stories.",
+      "at": "/stories",
+      "keyword": "maxItems"
+    },
+    {
+      "file": "invalid/empty_with_a_concept_note.json",
+      "shows": "An empty briefing has no concept note, because a note needs a story.",
+      "at": "/stories",
+      "keyword": "minItems"
+    },
+    {
+      "file": "invalid/concept_note_without_a_story.json",
+      "shows": "A concept note is tied to one of the day's stories, so there must be one.",
+      "at": "/stories",
+      "keyword": "minItems"
+    },
+    {
+      "file": "invalid/story_class_watch.json",
+      "shows": "A watch item belongs in the watchlist, not among the stories.",
+      "at": "/stories/0/class",
+      "keyword": "enum"
+    },
+    {
+      "file": "invalid/story_class_low.json",
+      "shows": "A low item is not shown at all.",
+      "at": "/stories/0/class",
+      "keyword": "enum"
+    },
+    {
+      "file": "invalid/unknown_confidence.json",
+      "shows": "confidence is one of low, moderate, high.",
+      "at": "/stories/0/confidence",
+      "keyword": "enum"
+    },
+    {
+      "file": "invalid/story_without_evidence.json",
+      "shows": "A story names at least one source document.",
+      "at": "/stories/0/evidence",
+      "keyword": "minItems"
+    },
+    {
+      "file": "invalid/story_missing_why_it_matters.json",
+      "shows": "Every story field is required.",
+      "at": "/stories/0",
+      "keyword": "required"
+    },
+    {
+      "file": "invalid/story_with_model_supplied_field.json",
+      "shows": "Unknown fields inside a story are rejected.",
+      "at": "/stories/0",
+      "keyword": "additionalProperties"
+    },
+    {
+      "file": "invalid/headline_too_long.json",
+      "shows": "A headline is at most 200 characters.",
+      "at": "/stories/0/headline",
+      "keyword": "maxLength"
+    },
+    {
+      "file": "invalid/summary_too_long.json",
+      "shows": "A summary is at most 800 characters.",
+      "at": "/stories/0/summary",
+      "keyword": "maxLength"
+    },
+    {
+      "file": "invalid/negative_source_count.json",
+      "shows": "independent_source_count is not negative.",
+      "at": "/stories/0/independent_source_count",
+      "keyword": "minimum"
+    },
+    {
+      "file": "invalid/evidence_url_javascript.json",
+      "shows": "Only http and https links are allowed.",
+      "at": "/stories/0/evidence/0/url",
+      "keyword": "pattern"
+    },
+    {
+      "file": "invalid/evidence_url_file.json",
+      "shows": "A file link is not allowed.",
+      "at": "/stories/0/evidence/0/url",
+      "keyword": "pattern"
+    },
+    {
+      "file": "invalid/evidence_url_with_markup.json",
+      "shows": "A link cannot contain spaces, quotes or angle brackets.",
+      "at": "/stories/0/evidence/0/url",
+      "keyword": "pattern"
+    },
+    {
+      "file": "invalid/unknown_source_role.json",
+      "shows": "source_role is one of the five roles.",
+      "at": "/stories/0/evidence/0/source_role",
+      "keyword": "enum"
+    },
+    {
+      "file": "invalid/watch_item_without_url.json",
+      "shows": "A watch item links to its source.",
+      "at": "/watchlist/0",
+      "keyword": "required"
+    },
+    {
+      "file": "invalid/concept_note_without_related_item.json",
+      "shows": "A concept note names the story it explains.",
+      "at": "/concept_note",
+      "keyword": "required"
+    },
+    {
+      "file": "invalid/concept_note_too_long.json",
+      "shows": "A concept note body is at most 1200 characters.",
+      "at": "/concept_note/body",
+      "keyword": "maxLength"
+    },
+    {
+      "file": "invalid/stories_not_a_list.json",
+      "shows": "stories is a list.",
+      "at": "/stories",
+      "keyword": "type"
+    }
+  ]
+}

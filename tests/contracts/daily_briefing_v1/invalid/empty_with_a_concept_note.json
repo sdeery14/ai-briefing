@@ -1,0 +1,16 @@
+{
+  "schema_version": "daily_briefing.v1",
+  "briefing_id": "b-2026-11-19-1",
+  "local_date": "2026-11-19",
+  "timezone": "America/New_York",
+  "generated_at": "2026-11-19T11:15:00Z",
+  "status": "empty",
+  "degraded_reasons": [],
+  "stories": [],
+  "watchlist": [],
+  "concept_note": {
+    "title": "Example concept",
+    "body": "Short model-written background, tied to the first story. Synthetic.",
+    "related_item_id": "i1"
+  }
+}
