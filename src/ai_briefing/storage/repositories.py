@@ -237,3 +237,31 @@ def upsert_source(connection: Connection, source: Source) -> None:
             index_elements=[table.c.id], set_={k: v for k, v in values.items() if k != "id"}
         )
     )
+
+
+def find_document(
+    connection: Connection, source_id: str, external_id: str
+) -> SourceDocument | None:
+    """The document with this identity, if it has been seen before."""
+    table = schema.source_documents
+    row = (
+        connection.execute(
+            select(table).where(table.c.source_id == source_id, table.c.external_id == external_id)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if row is None else SourceDocument.model_validate(dict(row))
+
+
+def latest_observation(connection: Connection, document_id: int) -> DocumentObservation | None:
+    """The newest observation of a document, if any."""
+    table = schema.document_observations
+    row = (
+        connection.execute(
+            select(table).where(table.c.document_id == document_id).order_by(table.c.id.desc())
+        )
+        .mappings()
+        .first()
+    )
+    return None if row is None else DocumentObservation.model_validate(dict(row))

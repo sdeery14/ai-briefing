@@ -18,6 +18,8 @@ dependencies = [
   "jsonschema>=4.23", # validates the briefing against schemas/ before it is exported
   "sqlalchemy>=2.0",  # the SQLite system of record (ADR-002, M1 issue 1.3)
   "alembic>=1.13",    # migrations, in batch mode for SQLite
+  "pyyaml>=6.0",      # reads config/*.yaml (M1 issue 1.4)
+  "feedparser>=6.0",  # RSS and Atom
 ]
 
 [project.scripts]
@@ -28,7 +30,6 @@ dev = [
   "ruff>=0.8",
   "mypy>=1.13",
   "pytest>=8.3",
-  "pyyaml>=6.0", # tests read config/*.yaml; the application will need it from M1 issue 1.4
   "types-pyyaml>=6.0",
   "types-jsonschema>=4.23",
 ]
@@ -98,6 +99,11 @@ strict = true
 warn_unreachable = true
 pretty = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+# feedparser ships no type information.
+module = ["feedparser", "feedparser.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # Tests
