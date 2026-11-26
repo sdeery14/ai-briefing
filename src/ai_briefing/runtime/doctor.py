@@ -89,10 +89,16 @@ def check_sources(engine: Engine, catalogue: Sequence[Source], now: datetime) ->
 
 
 def check_last_runs(engine: Engine) -> list[Check]:
-    """The newest run of each job, and whether it succeeded."""
+    """The latest attempt of each job, and whether it succeeded."""
     runs = schema.job_runs
     with engine.connect() as connection:
-        rows = connection.execute(select(runs).order_by(runs.c.id.desc())).mappings().all()
+        # By when the attempt started, not by row: a retry of an older day reuses its
+        # row, so the newest row is not always the latest attempt.
+        rows = (
+            connection.execute(select(runs).order_by(runs.c.started_at.desc(), runs.c.id.desc()))
+            .mappings()
+            .all()
+        )
     newest: dict[str, dict[str, Any]] = {}
     for row in rows:
         newest.setdefault(str(row["job"]), dict(row))

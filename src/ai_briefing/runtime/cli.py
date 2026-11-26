@@ -290,8 +290,9 @@ def _process(
 def _briefing_generate(
     database: str | None, date_text: str | None, timezone_text: str | None, output: str
 ) -> int:
-    from ai_briefing.briefings.compose import BriefingError, compose
+    from ai_briefing.briefings.compose import BriefingError
     from ai_briefing.briefings.render import to_markdown
+    from ai_briefing.runtime.daily import compose_job
     from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
     from ai_briefing.storage import database as storage
     from ai_briefing.storage.lock import LockHeld, job_lock
@@ -305,15 +306,18 @@ def _briefing_generate(
         with job_lock(path):
             engine = storage.create_database_engine(path)
             try:
-                with engine.begin() as connection:
-                    composed = compose(
-                        connection,
-                        catalogue,
-                        local_date=day,
-                        timezone=timezone,
-                        configuration_hash=_configuration_hash(),
-                        now=datetime.now(UTC),
+                if storage.current_revision(engine) != storage.head_revision():
+                    raise storage.StorageError(
+                        f"{path} is not at the current schema; run `ai-briefing db upgrade`"
                     )
+                composed = compose_job(
+                    engine,
+                    catalogue,
+                    local_date=day,
+                    timezone=timezone,
+                    application_version=__version__,
+                    configuration_hash=_configuration_hash(),
+                )
             finally:
                 engine.dispose()
     except (

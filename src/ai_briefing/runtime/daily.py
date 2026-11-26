@@ -18,18 +18,73 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from sqlalchemy import Engine
+from sqlalchemy.engine import Connection
 
-from ai_briefing.briefings.compose import compose
+from ai_briefing.briefings.compose import Composed, compose
 from ai_briefing.domain.records import Source
 from ai_briefing.editorial.process import Settings, assess, fetch_bodies, screen
 from ai_briefing.llm.client import ModelClient
 from ai_briefing.runtime.logs import JsonLog
 from ai_briefing.sources.collect import collect
 from ai_briefing.sources.fetcher import Fetcher
-from ai_briefing.storage.jobs import utc_now
+from ai_briefing.storage.jobs import run_job, utc_now
 
 STAGES = ("collect", "screen", "fetch-bodies", "assess", "briefing")
 AFTER_FAILURE = "after-failure"
+
+
+def briefing_counts(composed: Composed) -> dict[str, int]:
+    content = composed.briefing.document()
+    stories, watch = content.get("stories"), content.get("watchlist")
+    return {
+        "stories": len(stories) if isinstance(stories, list) else 0,
+        "watchlist": len(watch) if isinstance(watch, list) else 0,
+        "version": composed.briefing.version,
+    }
+
+
+def compose_job(
+    engine: Engine,
+    catalogue: Sequence[Source],
+    *,
+    local_date: date,
+    timezone: str,
+    application_version: str,
+    configuration_hash: str,
+    clock: Callable[[], datetime] = utc_now,
+) -> Composed:
+    """Compose the day's briefing as a recorded job.
+
+    The job has one record per day and runs every time it is asked: composing stores a
+    new version only when the content differs, so a repeat is harmless, and the record
+    always shows the latest attempt, its counts, and its failure if it failed.
+    """
+    made: list[Composed] = []
+
+    def work(connection: Connection, _job_run_id: int) -> Mapping[str, int]:
+        made.append(
+            compose(
+                connection,
+                catalogue,
+                local_date=local_date,
+                timezone=timezone,
+                configuration_hash=configuration_hash,
+                now=clock(),
+            )
+        )
+        return briefing_counts(made[0])
+
+    run_job(
+        engine,
+        job="briefing",
+        idempotency_key=f"briefing:{local_date.isoformat()}",
+        application_version=application_version,
+        configuration_hash=configuration_hash,
+        work=work,
+        run_again=True,
+        clock=clock,
+    )
+    return made[0]
 
 
 @dataclass
@@ -115,24 +170,19 @@ def run_day(
         return outcome.counts, outcome.ran
 
     def composing() -> tuple[Mapping[str, int], bool]:
-        with engine.begin() as connection:
-            composed = compose(
-                connection,
-                catalogue,
-                local_date=local_date,
-                timezone=timezone,
-                configuration_hash=configuration_hash,
-                now=clock(),
-            )
+        composed = compose_job(
+            engine,
+            catalogue,
+            local_date=local_date,
+            timezone=timezone,
+            application_version=application_version,
+            configuration_hash=configuration_hash,
+            clock=clock,
+        )
         content = composed.briefing.document()
         result.briefing_id = str(content["briefing_id"])
         result.briefing_status = composed.briefing.status.value
-        stories, watch = content.get("stories"), content.get("watchlist")
-        return {
-            "stories": len(stories) if isinstance(stories, list) else 0,
-            "watchlist": len(watch) if isinstance(watch, list) else 0,
-            "version": composed.briefing.version,
-        }, composed.created
+        return briefing_counts(composed), composed.created
 
     for name, run in zip(
         STAGES, (collecting, screening, fetching, assessing, composing), strict=True

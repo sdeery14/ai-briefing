@@ -123,6 +123,7 @@ def test_each_stage_is_a_recorded_job_run(engine: Engine, config: ModelsConfig) 
         ("screen", "screen:2026-11-19", "succeeded"),
         ("fetch-bodies", "fetch-bodies:2026-11-19", "succeeded"),
         ("assess", "assess:2026-11-19", "succeeded"),
+        ("briefing", "briefing:2026-11-19", "succeeded"),
     ]
 
 
@@ -208,6 +209,7 @@ def test_a_stage_that_fails_is_recorded_and_the_later_stages_still_run(
         "screen:2026-11-19",
         "fetch-bodies:2026-11-19:after-failure",
         "assess:2026-11-19:after-failure",
+        "briefing:2026-11-19",
     ]
     events = [(line["event"], line.get("stage")) for line in lines]
     assert ("stage.failed", "screen") in events
@@ -448,6 +450,7 @@ def test_doctor_reports_a_healthy_system_after_a_day(engine: Engine, config: Mod
         "job screen",
         "job fetch-bodies",
         "job assess",
+        "job briefing",
         "budget",
     }
     assert doctor.worst(checks) == doctor.OK
@@ -543,3 +546,88 @@ def test_replay_needs_no_key_and_a_live_run_without_one_says_so(
     assert cli.main(["run", *cli_day]) == 1
     assert "no API key" in capsys.readouterr().err
     assert len(ReplayBackend(RECORDED)) == 9
+
+
+# --- The briefing stage is a job ------------------------------------------------------------------
+
+
+def briefing_run(engine: Engine) -> dict[str, Any]:
+    with engine.connect() as connection:
+        row = (
+            connection.execute(select(schema.job_runs).where(schema.job_runs.c.job == "briefing"))
+            .mappings()
+            .one()
+        )
+    return dict(row)
+
+
+def test_composing_is_recorded_with_its_counts_and_the_version_that_ran(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    day(engine, config)
+    run = briefing_run(engine)
+    assert run["status"] == "succeeded"
+    assert json.loads(run["counts"]) == {"stories": 3, "watchlist": 3, "version": 1}
+    assert run["application_version"] == "0.0.0"
+    assert run["configuration_hash"] == HASH
+
+
+def test_composing_again_reuses_its_record_and_stores_no_second_version(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    day(engine, config)
+    before = row_counts(engine)
+    later = NOW + timedelta(hours=5)
+    result, _ = day(engine, config, now=later)
+    assert row_counts(engine) == before  # one job record for the day, one briefing version
+    assert result.briefing_id == "b-2026-11-19-1"
+    assert briefing_run(engine)["started_at"] == later  # the record shows the latest attempt
+
+
+def test_a_failed_composition_is_recorded_and_doctor_reports_it(
+    engine: Engine, config: ModelsConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ai_briefing.briefings.compose import BriefingError
+    from ai_briefing.runtime import daily
+
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise BriefingError("the composed briefing is not valid")
+
+    monkeypatch.setattr(daily, "compose", broken)
+    result, lines = day(engine, config)
+    assert result.failed == {"briefing": "BriefingError"}
+    assert result.briefing_id is None
+    run = briefing_run(engine)
+    assert run["status"] == "failed"
+    assert run["error"].startswith("BriefingError")
+    found = {check.name: check for check in doctor.check_last_runs(engine)}
+    assert found["job briefing"].status == doctor.FAIL
+    assert "(BriefingError)" in found["job briefing"].detail
+    assert found["job assess"].status == doctor.OK
+    assert lines[-1]["failed"] == "briefing"
+    # Fixed and run again the same day: the same record now shows success.
+    monkeypatch.undo()
+    again, _ = day(engine, config)
+    assert again.ok is True
+    assert briefing_run(engine)["status"] == "succeeded"
+    assert again.briefing_id == "b-2026-11-19-1"
+
+
+def test_doctor_judges_a_job_by_its_latest_attempt_not_its_newest_row(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    # Two days run and succeed. Then the older day is retried and fails: its row is the
+    # older one, but its attempt is the latest.
+    day(engine, config)
+    day(engine, config, local_date=DAY + timedelta(days=1), now=NOW + timedelta(days=1))
+    retried = NOW + timedelta(days=2)
+    with engine.begin() as connection:
+        connection.execute(
+            schema.job_runs.update()
+            .where(schema.job_runs.c.idempotency_key == "collect:2026-11-19")
+            .values(status="failed", started_at=retried, ended_at=retried, error="FetchError: down")
+        )
+    found = {check.name: check for check in doctor.check_last_runs(engine)}
+    assert found["job collect"].status == doctor.FAIL
+    assert "(FetchError)" in found["job collect"].detail
+    assert found["job screen"].status == doctor.OK
