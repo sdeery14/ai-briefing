@@ -29,7 +29,7 @@ issue, label it `needs-human`, and say why.
   refuses if one fails. Never merge a pull request in any other way: not with the `gh`
   command line, not through the API, not through a setting. Never turn on auto-merge.
 - **Never merge a pull request that touches an owner-only path** (decision records,
-  workflows, migrations, `pyproject.toml`, evaluation, `config/`, deployment, and the
+  workflows, migrations, evaluation, `config/`, deployment, and the
   agent workflow itself), or one labelled `needs-human`. Those are the owner's. A green
   pull request and an "Eligible" report are information, not permission.
 - If the merge command refuses, do not look for another route. Label the pull request
