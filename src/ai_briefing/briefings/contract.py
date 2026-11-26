@@ -11,7 +11,10 @@ A consumer validating the export file must assert the same two formats.
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -39,3 +42,20 @@ def contract_validator(schema: dict[str, Any]) -> Draft202012Validator:
     """A validator for a contract schema that also asserts its date formats."""
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema, format_checker=FORMAT_CHECKER)
+
+
+SCHEMAS_ENV = "AI_BRIEFING_SCHEMAS"
+
+
+def schemas_directory() -> Path:
+    """``AI_BRIEFING_SCHEMAS``, else ``schemas/`` in the source checkout (RFC §3.4)."""
+    override = os.environ.get(SCHEMAS_ENV)
+    return Path(override) if override else Path(__file__).resolve().parents[3] / "schemas"
+
+
+def load_schema(name: str) -> dict[str, Any]:
+    """The contract schema with this name, for example ``daily_briefing.v1``."""
+    schema: dict[str, Any] = json.loads(
+        (schemas_directory() / f"{name}.schema.json").read_text(encoding="utf-8")
+    )
+    return schema

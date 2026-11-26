@@ -25,6 +25,7 @@ from ai_briefing.domain.enums import (
     LLMCallStatus,
     MembershipAction,
     ModelTask,
+    ScreeningOutcome,
     SourceRole,
     SupportType,
 )
@@ -37,6 +38,7 @@ from ai_briefing.domain.records import (
     EditorialDecision,
     EvidenceItem,
     LLMCall,
+    ScreeningDecision,
     SourceDocument,
     Story,
     StoryMembershipEvent,
@@ -160,6 +162,18 @@ def _add_rest(connection: Connection, source_id: str, call: LLMCall, external_id
         ),
     )
     assert document.id is not None
+    assert call.id is not None
+    add(
+        connection,
+        ScreeningDecision(
+            document_id=document.id,
+            outcome=ScreeningOutcome.PASSED,
+            relevance=3,
+            reason="Relevant to the reference audience.",
+            model_call_id=call.id,
+            decided_at=NOW,
+        ),
+    )
     observation = add(
         connection,
         DocumentObservation(
