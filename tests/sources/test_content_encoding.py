@@ -120,3 +120,76 @@ def test_a_feed_failure_says_what_came_back_without_quoting_it(data: bytes, says
 def test_the_feed_error_carries_the_description() -> None:
     with pytest.raises(FeedError, match="not an RSS or Atom feed; it is gzip-compressed"):
         parse_feed(gzip.compress(BODY), feed_url=FEED)
+
+
+# --- All of a compressed body, or a failure ---------------------------------------------------
+
+
+def flushed_then_cut(data: bytes, rest: bytes, wbits: int) -> bytes:
+    """A compressed stream cut off after a point where everything so far can be read."""
+    packer = zlib.compressobj(wbits=wbits)
+    start = packer.compress(data) + packer.flush(zlib.Z_SYNC_FLUSH)
+    end = packer.compress(rest) + packer.flush()
+    return start + end[: len(end) // 2]
+
+
+@pytest.mark.parametrize(
+    ("encoding", "wbits"),
+    [("gzip", 16 + zlib.MAX_WBITS), ("deflate", zlib.MAX_WBITS), ("deflate", -zlib.MAX_WBITS)],
+)
+def test_a_compressed_response_that_stops_early_is_refused(encoding: str, wbits: int) -> None:
+    cut = flushed_then_cut(BODY, b"more of the feed " * 50, wbits)
+    with pytest.raises(FetchError):
+        fetch(FakeTransport({FEED: ok(cut, content_encoding=encoding)}))
+    with pytest.raises(FetchError):
+        fetch(FakeTransport({FEED: ok(gzip.compress(BODY)[:-9], content_encoding="gzip")}))
+
+
+def test_a_robots_txt_cut_off_before_its_last_rule_allows_nothing() -> None:
+    # The part that arrived allows everything. The part that did not might not have.
+    cut = flushed_then_cut(
+        b"User-agent: *\nAllow: /\n", b"Disallow: /feed.xml\n" * 40, 16 + zlib.MAX_WBITS
+    )
+    transport = FakeTransport({ROBOTS: ok(cut, content_encoding="gzip"), FEED: ok(BODY)})
+    with pytest.raises(Blocked, match=r"robots\.txt"):
+        fetch(transport)
+    assert transport.content_urls == []
+
+
+def test_every_member_of_a_gzip_response_is_read() -> None:
+    half = len(BODY) // 2
+    joined = gzip.compress(BODY[:half]) + gzip.compress(BODY[half:])
+    assert fetch(FakeTransport({FEED: ok(joined, content_encoding="gzip")})).body == BODY
+
+
+def test_a_rule_in_a_later_gzip_member_of_robots_txt_is_obeyed() -> None:
+    rules = gzip.compress(b"User-agent: *\nAllow: /public\n") + gzip.compress(
+        b"Disallow: /feed.xml\n"
+    )
+    transport = FakeTransport({ROBOTS: ok(rules, content_encoding="gzip"), FEED: ok(BODY)})
+    with pytest.raises(Blocked, match=r"robots\.txt"):
+        fetch(transport)
+    assert transport.content_urls == []
+
+
+def test_the_size_limit_is_on_all_the_members_together() -> None:
+    two = gzip.compress(b"x" * 3000) + gzip.compress(b"y" * 2000)
+    assert len(fetch(FakeTransport({FEED: ok(two, content_encoding="gzip")}), 5000).body) == 5000
+    three = two + gzip.compress(b"z")
+    with pytest.raises(ResponseTooLarge):
+        fetch(FakeTransport({FEED: ok(three, content_encoding="gzip")}), max_bytes=5000)
+
+
+@pytest.mark.parametrize(
+    ("encoding", "packed"),
+    [
+        ("gzip", gzip.compress(BODY) + b"not another member"),
+        ("deflate", zlib.compress(BODY) + b"trailing"),
+        ("deflate", zlib.compress(BODY) + zlib.compress(BODY)),
+    ],
+)
+def test_anything_after_the_compressed_body_that_is_not_part_of_it_is_refused(
+    encoding: str, packed: bytes
+) -> None:
+    with pytest.raises(FetchError):
+        fetch(FakeTransport({FEED: ok(packed, content_encoding=encoding)}))

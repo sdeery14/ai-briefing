@@ -48,15 +48,34 @@ def decoded(body: bytes, encoding: str | None, limit: int) -> bytes:
     else:
         raise FetchError(f"the response uses a content encoding that is not read: {name[:30]}")
     for wbits in attempts:
-        expander = zlib.decompressobj(wbits)
         try:
-            out = expander.decompress(body, limit + 1)
+            return _expanded(body, wbits, limit, members=name != "deflate")
         except zlib.error:
             continue
+    raise FetchError(f"the response says it is {name} and could not be read as that")
+
+
+def _expanded(body: bytes, wbits: int, limit: int, *, members: bool) -> bytes:
+    """All of a compressed body, or a failure. Never part of it.
+
+    A stream that stops before its end is refused: what is missing may be the rule in
+    robots.txt that mattered, or half a feed. A gzip body may be several members one after
+    another, and every one is read; the limit is on their total.
+    """
+    out = bytearray()
+    data = body
+    while True:
+        expander = zlib.decompressobj(wbits)
+        out += expander.decompress(data, limit + 1 - len(out))
         if len(out) > limit or expander.unconsumed_tail:
             raise ResponseTooLarge(f"the response expands beyond the limit of {limit} bytes")
-        return out
-    raise FetchError(f"the response says it is {name} and could not be read as that")
+        if not expander.eof:
+            raise FetchError("the compressed response ends before it is complete")
+        data = expander.unused_data
+        if not data:
+            return bytes(out)
+        if not members:
+            raise FetchError("the compressed response is followed by data that is not part of it")
 
 
 class TooManyRedirects(FetchError):  # noqa: N818 - reads as a statement of fact
