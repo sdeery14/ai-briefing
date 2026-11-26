@@ -35,13 +35,12 @@ from ai_briefing.domain.enums import (
     LLMCallStatus,
 )
 from ai_briefing.domain.records import Briefing, BriefingItem, Source
-from ai_briefing.editorial.process import current_input_hash
+from ai_briefing.editorial.process import FRESHNESS, current_input_hash
 from ai_briefing.storage import queries, repositories, schema
 
 SCHEMA_VERSION = "daily_briefing.v1"
 MAX_STORIES = 5
 MAX_WATCH = 10
-FRESHNESS = timedelta(hours=72)
 HEADLINE_CHARS = 200
 SUMMARY_CHARS = 800
 WHY_CHARS = 600
@@ -257,14 +256,17 @@ def compose(
     from the latest. The caller's transaction holds all of it.
     """
     start, end = day_bounds(local_date, timezone)
-    # Stories first seen in the freshness window that ends with the day.
+    # The same clock as processing: an item is news for FRESHNESS after it was published,
+    # counted back from now. So anything processing just paid to assess is still fresh
+    # here. A briefing composed for an earlier day counts back from that day's end.
+    reference = min(now, end)
     sources = {source.id: source for source in catalogue}
     assessed = queries.assessed_stories(
         connection,
-        end - FRESHNESS,
+        reference - FRESHNESS,
         lambda item: current_input_hash(connection, sources, item),
     )
-    assessed = [item for item in assessed if item.story.first_seen_at < end]
+    assessed = [item for item in assessed if item.document.fresh_at < end]
     reasons = [BUDGET_REASON] if _budget_refusals(connection, start, end) else []
     previous = latest_briefing(connection, local_date, BriefingVariant.PIPELINE)
     version = previous.version + 1 if previous else 1

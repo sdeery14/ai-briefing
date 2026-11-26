@@ -32,6 +32,11 @@ DATABASE_HELP = (
 )
 
 
+def current_time() -> datetime:
+    """The time, for every command. One place, so a test can set it."""
+    return datetime.now(UTC)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai-briefing", description=DESCRIPTION)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -162,6 +167,10 @@ def make_fetcher() -> Fetcher:
     )
 
 
+def _report_source_failure(source_id: str, why: str) -> None:
+    sys.stderr.write(f"ai-briefing: {source_id} was not collected: {why}\n")
+
+
 def _collect(database: str | None, only: str | None) -> int:
     from ai_briefing.sources.catalogue import CatalogueError, config_directory, load_catalogue
     from ai_briefing.sources.collect import collect
@@ -188,6 +197,8 @@ def _collect(database: str | None, only: str | None) -> int:
                     application_version=__version__,
                     configuration_hash=hashlib.sha256(configuration).hexdigest(),
                     only=only,
+                    on_failure=_report_source_failure,
+                    clock=current_time,
                 )
             finally:
                 engine.dispose()
@@ -207,7 +218,7 @@ def _day(date_text: str | None, timezone_text: str | None) -> tuple[date, str]:
     except (ZoneInfoNotFoundError, ValueError) as error:
         raise ValueError(f"unknown time zone {timezone!r}") from error
     if date_text is None:
-        return datetime.now(zone).date(), timezone
+        return current_time().astimezone(zone).date(), timezone
     try:
         return date.fromisoformat(date_text), timezone
     except ValueError as error:
@@ -262,7 +273,7 @@ def _process(
                 counts = process(
                     engine,
                     catalogue,
-                    ModelClient(engine=engine, config=config, backend=backend),
+                    ModelClient(engine=engine, config=config, backend=backend, clock=current_time),
                     make_fetcher(),
                     config.for_task(ModelTask.ASSESSMENT)[0],
                     Settings(
@@ -270,6 +281,7 @@ def _process(
                         configuration_hash=_configuration_hash(),
                         day=day.isoformat(),
                     ),
+                    clock=current_time,
                 )
             finally:
                 engine.dispose()
@@ -317,6 +329,7 @@ def _briefing_generate(
                     timezone=timezone,
                     application_version=__version__,
                     configuration_hash=_configuration_hash(),
+                    clock=current_time,
                 )
             finally:
                 engine.dispose()
@@ -376,14 +389,15 @@ def _run_day(
                 result = run_day(
                     engine,
                     catalogue,
-                    ModelClient(engine=engine, config=config, backend=backend),
+                    ModelClient(engine=engine, config=config, backend=backend, clock=current_time),
                     make_fetcher(),
                     model_id=config.for_task(ModelTask.ASSESSMENT)[0],
                     local_date=day,
                     timezone=timezone,
                     application_version=__version__,
                     configuration_hash=_configuration_hash(),
-                    log=JsonLog(),
+                    log=JsonLog(clock=current_time),
+                    clock=current_time,
                 )
             finally:
                 engine.dispose()
@@ -418,7 +432,7 @@ def _doctor(database: str | None) -> int:
     from ai_briefing.storage import database as storage
 
     path = storage.database_path(database)
-    now = datetime.now(UTC)
+    now = current_time()
     checks: list[doctor.Check] = []
     try:
         catalogue = load_catalogue()
@@ -457,7 +471,7 @@ def _budget_status(database: str | None, output: str) -> int:
     from ai_briefing.storage import database as storage
 
     path = storage.database_path(database)
-    now = datetime.now(UTC)
+    now = current_time()
     try:
         config = load_models_config()
         if not path.is_file():

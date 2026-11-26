@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, exists, select
+from sqlalchemy import ColumnElement, and_, exists, or_, select
 from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import ScreeningOutcome
@@ -31,19 +31,40 @@ def _documents(connection: Connection, query: object) -> list[SourceDocument]:
     return [SourceDocument.model_validate(dict(row)) for row in rows]
 
 
+def fresh_since(since: datetime) -> ColumnElement[bool]:
+    """A document published at or after ``since``; or, where its source gave no published
+    time, first seen at or after it (RFC §6.3)."""
+    documents = schema.source_documents
+    return or_(
+        and_(documents.c.published_at.is_not(None), documents.c.published_at >= since),
+        and_(documents.c.published_at.is_(None), documents.c.first_seen_at >= since),
+    )
+
+
 def unscreened_documents(
-    connection: Connection, source_ids: list[str], limit: int
+    connection: Connection, source_ids: list[str], limit: int, since: datetime
 ) -> list[SourceDocument]:
-    """Documents from these sources that have no screening decision yet, oldest first."""
+    """Fresh documents from these sources that have no screening decision yet.
+
+    A feed read for the first time carries its whole back catalogue. Those items are
+    stored, so they are recognised next time, but they are not news and are not screened.
+    """
     documents = schema.source_documents
     decided = exists().where(schema.screening_decisions.c.document_id == documents.c.id)
     return _documents(
         connection,
         select(documents)
-        .where(documents.c.source_id.in_(source_ids), ~decided)
+        .where(documents.c.source_id.in_(source_ids), ~decided, fresh_since(since))
         .order_by(documents.c.id)
         .limit(limit),
     )
+
+
+def screening_relevance(connection: Connection) -> dict[int, int]:
+    """Each screened document's relevance rating."""
+    decisions = schema.screening_decisions
+    rows = connection.execute(select(decisions.c.document_id, decisions.c.relevance))
+    return {row.document_id: row.relevance for row in rows}
 
 
 def passed_documents_without_story(connection: Connection) -> list[SourceDocument]:
@@ -60,9 +81,9 @@ def passed_documents_without_story(connection: Connection) -> list[SourceDocumen
 
 
 def passed_documents_without_body(
-    connection: Connection, source_ids: list[str]
+    connection: Connection, source_ids: list[str], since: datetime
 ) -> list[SourceDocument]:
-    """Documents that passed screening, from these sources, with no article text yet."""
+    """Fresh documents that passed screening, from these sources, with no article text yet."""
     documents = schema.source_documents
     decisions = schema.screening_decisions
     observations = schema.document_observations
@@ -80,6 +101,7 @@ def passed_documents_without_body(
             decisions.c.outcome == ScreeningOutcome.PASSED.value,
             documents.c.source_id.in_(source_ids),
             ~has_body,
+            fresh_since(since),
         )
         .order_by(documents.c.id),
     )
@@ -148,11 +170,11 @@ class Assessed:
 
 def assessed_stories(
     connection: Connection,
-    first_seen_from: datetime,
+    fresh_from: datetime,
     current_input: Callable[[StoryInput], str | None],
 ) -> list[Assessed]:
-    """Each open story first seen since ``first_seen_from``, with the assessment of its
-    *current* input and that assessment's newest decision.
+    """Each open story whose document is fresh since ``fresh_from``, with the assessment of
+    its *current* input and that assessment's newest decision.
 
     ``current_input`` gives the input hash a story would be assessed with now. Only an
     assessment made from exactly that input is used: an assessment of a headline or text
@@ -164,7 +186,7 @@ def assessed_stories(
     decisions = schema.editorial_decisions
     evidence = schema.evidence_items
     for item in open_stories(connection):
-        if item.story.first_seen_at < first_seen_from or item.story.id is None:
+        if item.document.fresh_at < fresh_from or item.story.id is None:
             continue
         wanted = current_input(item)
         if wanted is None:

@@ -24,7 +24,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
@@ -75,6 +75,9 @@ MAX_ASSESSED_PER_RUN = 60
 # the inexpensive model's higher price applies, whatever the article's length.
 MAX_TEXT_CHARS = 40_000
 OWN_STORY_RULE = "own-story"
+# An item is news for this long after it was published (RFC §6.3). Older items are kept
+# for recognition and are not screened, fetched, assessed or briefed.
+FRESHNESS = timedelta(hours=72)
 
 
 @dataclass(frozen=True)
@@ -184,7 +187,9 @@ def screen(
 
     def prepare(job_run_id: int) -> None:
         with engine.connect() as connection:
-            documents = queries.unscreened_documents(connection, submittable, MAX_SCREENED_PER_RUN)
+            documents = queries.unscreened_documents(
+                connection, submittable, MAX_SCREENED_PER_RUN, clock() - FRESHNESS
+            )
             views: list[dict[str, object]] = []
             for document in documents:
                 if document.id is None:
@@ -298,7 +303,9 @@ def fetch_bodies(
 
     def prepare(_job_run_id: int) -> None:
         with engine.connect() as connection:
-            documents = queries.passed_documents_without_body(connection, page_sources)
+            documents = queries.passed_documents_without_body(
+                connection, page_sources, clock() - FRESHNESS
+            )
         for document in documents:
             source = sources[document.source_id]
             if not may_fetch_body(source, document):
@@ -373,6 +380,7 @@ def assess(
     }
 
     def prepare(job_run_id: int) -> None:
+        fresh_from = clock() - FRESHNESS
         with engine.connect() as connection:
             pending: list[tuple[int, Source, SourceDocument, DocumentObservation, str, str]] = []
             for item in queries.open_stories(connection):
@@ -381,6 +389,8 @@ def assess(
                     continue
                 if source.model_submission is ModelSubmission.NONE or not source.enabled:
                     continue
+                if item.document.fresh_at < fresh_from:
+                    continue  # no longer news; not worth a model call
                 observation = best_observation(connection, source, item.document)
                 if observation is None or observation.id is None:
                     continue
@@ -391,6 +401,17 @@ def assess(
                 ):
                     continue
                 pending.append((item.story.id, source, item.document, observation, packet, digest))
+            relevance = queries.screening_relevance(connection)
+        # The most relevant first, then the newest. A run assesses a limited number, so
+        # the order decides what a busy day's briefing is made from: not whichever source
+        # happened to be collected first.
+        pending.sort(
+            key=lambda entry: (
+                -relevance.get(entry[2].id or 0, 0),
+                -entry[2].fresh_at.timestamp(),
+                entry[0],
+            )
+        )
         for story_id, source, document, observation, packet, digest in pending[
             :MAX_ASSESSED_PER_RUN
         ]:

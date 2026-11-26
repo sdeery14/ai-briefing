@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -163,6 +163,7 @@ def test_one_command_sequence_produces_a_briefing(
     monkeypatch.delenv("AI_BRIEFING_TIMEZONE", raising=False)
     transport = FakeTransport()
     monkeypatch.setattr(cli, "make_fetcher", lambda: make_fetcher(transport))
+    monkeypatch.setattr(cli, "current_time", lambda: NOW)
     db = ["--database", str(tmp_path / "data" / "briefing.sqlite3")]
 
     assert cli.main(["db", "upgrade", *db]) == 0
@@ -755,3 +756,185 @@ def test_a_story_whose_current_input_is_not_yet_assessed_is_left_out(
     content, _ = briefing(engine)
     assert "retrieval" not in json.dumps(content["stories"]).lower()
     assert len(content["stories"]) == 2
+
+
+# --- Freshness, and what gets assessed first ------------------------------------------------------
+
+
+def dated_feed(*items: tuple[str, str, str]) -> bytes:
+    """An RSS feed for the papers source. Each item is (guid, title, RFC 822 date or "")."""
+    body = "".join(
+        f"<item><title>{title}</title><link>https://papers.example.org/{guid}</link>"
+        f'<guid isPermaLink="false">{guid}</guid>'
+        + (f"<pubDate>{when}</pubDate>" if when else "")
+        + f"<description>Abstract of {title}. It reports a measured result.</description></item>"
+        for guid, title, when in items
+    )
+    return (
+        '<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel>'
+        f"<title>Synthetic</title><link>https://papers.example.org/</link>{body}</channel></rss>"
+    ).encode()
+
+
+def only_papers(feed: bytes) -> FakeTransport:
+    empty = dated_feed()
+    return FakeTransport(
+        {
+            "https://papers.example.org/feed.xml": feed,
+            "https://vendor.example.org/feed.xml": empty,
+            "https://notes.example.org/feed.xml": empty,
+        }
+    )
+
+
+def test_a_feeds_back_catalogue_is_stored_and_not_treated_as_news(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    feed = dated_feed(
+        ("today", "Published this morning", "Thu, 19 Nov 2026 08:00:00 GMT"),
+        ("recent", "Published two days ago", "Tue, 17 Nov 2026 12:00:00 GMT"),
+        ("edge", "Published just inside three days", "Mon, 16 Nov 2026 11:16:00 GMT"),
+        ("stale", "Published just outside three days", "Mon, 16 Nov 2026 11:14:00 GMT"),
+        ("old", "Published last year", "Wed, 19 Nov 2025 08:00:00 GMT"),
+        ("ancient", "Published in 2020", "Fri, 14 Feb 2020 00:00:00 GMT"),
+    )
+    backend = ScriptedBackend()
+    counts = run_day(engine, config, backend, only_papers(feed))
+    # All six are stored, so they are recognised and not collected again.
+    assert len(table(engine, "source_documents")) == 6
+    # Only the three inside the window are screened, become stories and are assessed.
+    assert counts["screen"]["screened"] == 3
+    assert counts["assess"]["assessed"] == 3
+    sent = " ".join(request.user for request in backend.requests)
+    for fresh in ("this morning", "two days ago", "just inside three days"):
+        assert fresh in sent
+    for stale in ("just outside three days", "last year", "in 2020"):
+        assert stale not in sent  # never sent to the model: no cost, and no place in a briefing
+    assert len(backend.requests) == 4  # one screening call and three assessments
+    # Composing uses the same window as processing, so every story that was assessed is
+    # in the briefing, the one just inside three days included. None was paid for in vain.
+    content, _ = briefing(engine)
+    shown = [s["headline"] for s in content["stories"]] + [
+        w["headline"] for w in content["watchlist"]
+    ]
+    assert sorted(shown) == [
+        "Published just inside three days",
+        "Published this morning",
+        "Published two days ago",
+    ]
+
+
+def test_an_item_with_no_published_time_is_dated_from_when_it_was_first_seen(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    feed = dated_feed(("undated", "An undated item", ""))
+    counts = run_day(engine, config, ScriptedBackend(), only_papers(feed))
+    assert counts["screen"]["screened"] == 1
+    (document,) = table(engine, "source_documents")
+    assert document["published_at"] is None  # still not guessed
+    # Four days later it has aged out, and an unscreened copy would not be screened.
+    later = ScriptedBackend()
+    four_days = NOW + timedelta(days=4)
+    run_day(engine, config, later, only_papers(feed), day="2026-11-23", now=four_days)
+    assert later.requests == []
+
+
+def test_the_most_relevant_and_newest_stories_are_assessed_first(
+    engine: Engine, config: ModelsConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ai_briefing.editorial import process as processing
+
+    monkeypatch.setattr(processing, "MAX_ASSESSED_PER_RUN", 3)
+    feed = dated_feed(
+        ("a", "First in the feed, rated two", "Wed, 18 Nov 2026 08:00:00 GMT"),
+        ("b", "Second in the feed, rated two", "Thu, 19 Nov 2026 08:00:00 GMT"),
+        ("c", "Third in the feed, rated four", "Tue, 17 Nov 2026 08:00:00 GMT"),
+        ("d", "Fourth in the feed, rated three", "Wed, 18 Nov 2026 09:00:00 GMT"),
+        ("e", "Fifth in the feed, rated three", "Thu, 19 Nov 2026 09:00:00 GMT"),
+    )
+    ratings = {
+        "First in the feed, rated two": 2,
+        "Second in the feed, rated two": 2,
+        "Third in the feed, rated four": 4,
+        "Fourth in the feed, rated three": 3,
+        "Fifth in the feed, rated three": 3,
+    }
+    backend = ScriptedBackend(rated(ratings))
+    counts = run_day(engine, config, backend, only_papers(feed))
+    assert counts["assess"]["assessed"] == 3
+    order = [
+        json.loads(request.user)["observations"][0]["title"]
+        for request in backend.requests
+        if "observations" in request.user
+    ]
+    # By rating, then newest first. Not the order the feed listed them in.
+    assert order == [
+        "Third in the feed, rated four",
+        "Fifth in the feed, rated three",
+        "Fourth in the feed, rated three",
+    ]
+
+
+def test_a_briefing_holds_only_stories_published_in_its_window(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    assert len(briefing(engine)[0]["stories"]) == 3
+    # The same stories, four days on: nothing in them is news any more.
+    with engine.begin() as connection:
+        composed = compose(
+            connection,
+            CATALOGUE,
+            local_date=date(2026, 11, 23),
+            timezone="UTC",
+            configuration_hash=HASH,
+            now=NOW + timedelta(days=4),
+        )
+    content = composed.briefing.document()
+    assert content["status"] == "empty"
+    assert content["stories"] == content["watchlist"] == []
+
+
+def test_composing_and_processing_agree_on_what_is_fresh(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    from ai_briefing.editorial.process import FRESHNESS
+
+    boundary = NOW - FRESHNESS  # 16 November, 11:15
+    feed = dated_feed(
+        ("in", "One minute inside the window", "Mon, 16 Nov 2026 11:16:00 GMT"),
+        ("at", "Exactly at the edge of the window", "Mon, 16 Nov 2026 11:15:00 GMT"),
+        ("out", "One minute outside the window", "Mon, 16 Nov 2026 11:14:00 GMT"),
+    )
+    assert boundary == datetime(2026, 11, 16, 11, 15, tzinfo=NOW.tzinfo)
+    backend = ScriptedBackend()
+    counts = run_day(engine, config, backend, only_papers(feed))
+    assessed_titles = sorted(
+        json.loads(request.user)["observations"][0]["title"]
+        for request in backend.requests
+        if "observations" in request.user
+    )
+    content, _ = briefing(engine)
+    briefed = sorted(
+        [s["headline"] for s in content["stories"]] + [w["headline"] for w in content["watchlist"]]
+    )
+    assert counts["assess"]["assessed"] == 2
+    assert (
+        assessed_titles
+        == briefed
+        == [
+            "Exactly at the edge of the window",
+            "One minute inside the window",
+        ]
+    )
+
+
+def test_a_briefing_for_an_earlier_day_counts_back_from_that_days_end(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    # Composed a week later, for the day itself: the day's stories are still its stories.
+    week_later = NOW + timedelta(days=7)
+    content, _ = briefing(engine, now=week_later)
+    assert len(content["stories"]) == 3
+    assert content["local_date"] == "2026-11-19"
