@@ -26,10 +26,11 @@ from ai_briefing.llm.backends import (
     ReplayBackend,
     recording,
 )
-from ai_briefing.llm.client import ModelClient, ModelResult, month_to_date
+from ai_briefing.llm.budget import DAILY, MONTHLY, current_spend, daily_allowance, month_to_date
+from ai_briefing.llm.client import ModelClient, ModelResult
 from ai_briefing.llm.config import ModelsConfig
 from ai_briefing.llm.credentials import ApiKey
-from ai_briefing.llm.pricing import Usage
+from ai_briefing.llm.pricing import Usage, cost, prompt_token_ceiling, worst_case_cost
 from ai_briefing.storage import repositories, schema
 from ai_briefing.storage.jobs import run_job
 
@@ -147,11 +148,14 @@ def test_output_that_is_not_the_asked_shape_is_recorded_and_never_returned(
     assert result.status is LLMCallStatus.FAILED
     assert result.output is None
     assert result.reason == error_class
-    (row,) = rows(engine)
-    assert (row["status"], row["error_class"]) == ("failed", error_class)
-    assert row["tokens_in"] == 1000  # the tokens were used, so they are counted
-    assert Decimal(row["estimated_cost_usd"]) > 0
-    assert row["response_payload"]  # what came back is kept for diagnosis
+    recorded = rows(engine)
+    # A wrong shape is asked for once more; a cut-off answer is not.
+    assert len(recorded) == (1 if error_class == "OutputTruncated" else 2)
+    for row in recorded:
+        assert (row["status"], row["error_class"]) == ("failed", error_class)
+        assert row["tokens_in"] == 1000  # the tokens were used, so they are counted
+        assert Decimal(row["estimated_cost_usd"]) > 0
+        assert row["response_payload"]  # what came back is kept for diagnosis
 
 
 def test_a_provider_failure_is_recorded_and_returned_not_raised(
@@ -199,7 +203,7 @@ def test_a_call_that_would_exceed_the_cap_is_refused_before_any_request(
     assert "monthly budget of 15" in (result.reason or "")
     assert backend.requests == []  # nothing was sent
     refused = rows(engine)[-1]
-    assert (refused["status"], refused["error_class"]) == ("budget_refused", "BudgetExceeded")
+    assert (refused["status"], refused["error_class"]) == ("budget_refused", MONTHLY)
     assert (refused["tokens_in"], refused["tokens_out"]) == (0, 0)
     assert Decimal(refused["estimated_cost_usd"]) == 0
     assert month_to_date(engine, NOW) == Decimal("14.9999")  # the refusal cost nothing
@@ -211,7 +215,7 @@ def test_the_check_uses_the_worst_case_not_the_likely_cost(
     # Ten thousand characters of plain English are about 2,500 tokens, which with the
     # output would cost roughly $0.00035. The check does not trust that guess: it counts
     # every byte as a token and the whole output limit as used, about $0.0012.
-    spend(engine, job_run_id, "14.9990")
+    spend(engine, job_run_id, "14.99")
     long_prompt = "plain words " * 834
     result = ask(client, job_run_id, "relevant", user=long_prompt)
     assert result.status is LLMCallStatus.BUDGET_REFUSED
@@ -247,10 +251,10 @@ def test_month_to_date_is_the_sum_of_every_recorded_call(
     for key in ("relevant", "refusal", "invalid", "error", "long"):
         ask(client, job_run_id, key)
     recorded = [Decimal(row["estimated_cost_usd"]) for row in rows(engine)]
-    assert len(recorded) == 5
+    assert len(recorded) == 6  # the invalid answer was asked for twice
     assert month_to_date(engine, NOW) == sum(recorded)
-    # $0.00027 + $0.000116 + $0.00012 + nothing for the failed call + $0.0775
-    assert month_to_date(engine, NOW) == Decimal("0.078006")
+    # $0.00027 + $0.000116 + 2 x $0.00012 + nothing for the failed call + $0.0775
+    assert month_to_date(engine, NOW) == Decimal("0.078126")
 
 
 def test_a_large_output_limit_alone_can_be_refused(
@@ -274,14 +278,16 @@ def test_the_output_limit_must_be_within_the_models(
 def test_every_call_leaves_exactly_one_record(
     client: ModelClient, engine: Engine, job_run_id: int
 ) -> None:
-    for count, key in enumerate(("relevant", "refusal", "invalid", "truncated", "error"), start=1):
+    for count, key in enumerate(("relevant", "refusal", "truncated", "error"), start=1):
         ask(client, job_run_id, key)
         assert len(rows(engine)) == count
+    ask(client, job_run_id, "invalid")  # two requests: the first answer and the retry
+    assert len(rows(engine)) == 6
     spend(engine, job_run_id, "15")
     ask(client, job_run_id, "relevant")
     statuses = [row["status"] for row in rows(engine)]
     assert statuses[-1] == "budget_refused"
-    assert len(statuses) == 7
+    assert len(statuses) == 8
 
 
 def test_a_call_made_by_a_job_that_then_fails_is_still_on_record(
@@ -506,3 +512,200 @@ def test_a_recorded_call_never_holds_the_key(
         count = connection.execute(select(func.count()).select_from(schema.llm_calls)).scalar_one()
     assert count == 1
     assert FAKE_KEY not in repr(everything)
+
+
+# --- One retry when the answer is not the asked shape (ADR-009) ---------------------------------
+
+
+class SequenceBackend:
+    """Gives its responses in turn. Stands in for a model that answers differently twice."""
+
+    def __init__(self, *responses: ModelResponse) -> None:
+        self.responses = list(responses)
+        self.requests: list[ModelRequest] = []
+
+    def create(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
+BAD = ModelResponse('{"relevant": "maybe"}', "end_turn", Usage(input_tokens=1000, output_tokens=40))
+GOOD = ModelResponse(
+    '{"relevant": true, "reason": "ok"}', "end_turn", Usage(input_tokens=1000, output_tokens=50)
+)
+
+
+def sequence_client(
+    engine: Engine, config: ModelsConfig, *responses: ModelResponse
+) -> tuple[ModelClient, SequenceBackend]:
+    backend = SequenceBackend(*responses)
+    return ModelClient(engine=engine, config=config, backend=backend, clock=lambda: NOW), backend
+
+
+def test_an_answer_in_the_wrong_shape_is_asked_for_once_more(
+    engine: Engine, config: ModelsConfig, job_run_id: int
+) -> None:
+    client, backend = sequence_client(engine, config, BAD, GOOD)
+    result = ask(client, job_run_id, "relevant")
+    assert result.status is LLMCallStatus.SUCCEEDED
+    assert result.output == Verdict(relevant=True, reason="ok")
+    assert len(backend.requests) == 2
+    assert backend.requests[0] == backend.requests[1]  # the same request, sent again
+    # Both requests cost money, and both are on record.
+    recorded = rows(engine)
+    assert [(r["status"], r["error_class"]) for r in recorded] == [
+        ("failed", "InvalidOutput"),
+        ("succeeded", None),
+    ]
+    assert month_to_date(engine, NOW) == Decimal("0.00012") + Decimal("0.000125")
+    assert result.call.id == recorded[1]["id"]
+
+
+def test_the_retry_is_bounded_at_one(engine: Engine, config: ModelsConfig, job_run_id: int) -> None:
+    client, backend = sequence_client(engine, config, BAD, BAD, GOOD)
+    result = ask(client, job_run_id, "relevant")
+    assert result.status is LLMCallStatus.FAILED
+    assert result.reason == "InvalidOutput"
+    assert len(backend.requests) == 2  # the third response is never asked for
+    assert len(rows(engine)) == 2
+
+
+def worst_case(config: ModelsConfig, user: str, max_output_tokens: int) -> Decimal:
+    """The figure the client's budget check uses for a screening call with this text."""
+    _, spec, _ = config.for_task(ModelTask.SCREENING)
+    ceiling = prompt_token_ceiling(SYSTEM, user, json.dumps(Verdict.model_json_schema()))
+    return worst_case_cost(spec, ceiling, max_output_tokens)
+
+
+def test_the_retry_has_its_own_budget_check(
+    engine: Engine, config: ModelsConfig, job_run_id: int
+) -> None:
+    # Today has room for exactly one worst-case call. The first answer is the wrong shape
+    # and costs something, so the retry no longer fits and is refused, not sent.
+    worst = worst_case(config, USER["relevant"], MAX_OUTPUT_TOKENS)
+    allowance = daily_allowance(config.budget, Decimal(0), NOW)
+    already = allowance - worst - Decimal("0.00001")
+    spend(engine, job_run_id, str(already), at=NOW.replace(hour=1))
+    client, backend = sequence_client(engine, config, BAD, GOOD)
+    result = ask(client, job_run_id, "relevant")
+    assert result.status is LLMCallStatus.BUDGET_REFUSED
+    assert len(backend.requests) == 1
+    assert [r["status"] for r in rows(engine)][-2:] == ["failed", "budget_refused"]
+
+
+def test_a_refusal_a_cut_off_answer_and_a_provider_error_are_not_retried(
+    engine: Engine, config: ModelsConfig, job_run_id: int
+) -> None:
+    refusal = ModelResponse("", "refusal", Usage(input_tokens=10, output_tokens=1))
+    cut_off = ModelResponse(
+        '{"relevant": tr', "max_tokens", Usage(input_tokens=10, output_tokens=200)
+    )
+    for first in (refusal, cut_off):
+        client, backend = sequence_client(engine, config, first, GOOD)
+        assert ask(client, job_run_id, "relevant").status is not LLMCallStatus.SUCCEEDED
+        assert len(backend.requests) == 1
+
+
+# --- The day's allowance (RFC 7.2) ---------------------------------------------------------------
+
+
+def test_the_days_allowance_is_what_is_left_of_the_month_over_the_days_left(
+    config: ModelsConfig,
+) -> None:
+    budget = config.budget
+    # On the 19th of a 30-day month, 12 days remain, today included.
+    assert daily_allowance(budget, Decimal(0), NOW) == Decimal("1.25")
+    assert daily_allowance(budget, Decimal("9"), NOW) == Decimal("0.5")
+    first = datetime(2026, 11, 1, 0, 0, tzinfo=UTC)
+    last = datetime(2026, 11, 30, 23, 59, tzinfo=UTC)
+    assert daily_allowance(budget, Decimal(0), first) == Decimal("0.5")
+    assert daily_allowance(budget, Decimal("14"), last) == Decimal("1")  # the last day: the rest
+    assert daily_allowance(budget, Decimal("20"), NOW) == 0  # overspent: nothing, never negative
+    february = datetime(2028, 2, 29, 12, 0, tzinfo=UTC)
+    assert daily_allowance(budget, Decimal("14"), february) == Decimal("1")
+
+
+def test_a_fixed_daily_allowance_in_the_configuration_is_used(config: ModelsConfig) -> None:
+    fixed = config.budget.model_copy(update={"daily_allowance": Decimal("0.40")})
+    assert daily_allowance(fixed, Decimal(0), NOW) == Decimal("0.40")
+    assert daily_allowance(fixed, Decimal("14"), NOW) == Decimal("0.40")
+    assert config.budget.daily_allowance is None  # the committed file does not set one
+
+
+def test_a_call_is_refused_when_today_is_spent_although_the_month_has_room(
+    client: ModelClient, engine: Engine, job_run_id: int, backend: CountingBackend
+) -> None:
+    # $1.25 may be spent today. $1.2499 already has been, and the month is at a twelfth
+    # of its cap.
+    spend(engine, job_run_id, "1.2499", at=NOW.replace(hour=1))
+    result = ask(client, job_run_id, "relevant")
+    assert result.status is LLMCallStatus.BUDGET_REFUSED
+    assert "allowance for the day" in (result.reason or "")
+    assert backend.requests == []
+    refused = rows(engine)[-1]
+    assert (refused["status"], refused["error_class"]) == ("budget_refused", DAILY)
+    assert Decimal(refused["estimated_cost_usd"]) == 0
+    assert month_to_date(engine, NOW) == Decimal("1.2499")
+
+
+def test_yesterdays_spend_does_not_count_against_today(
+    client: ModelClient, engine: Engine, job_run_id: int
+) -> None:
+    yesterday = datetime(2026, 11, 18, 23, 59, 59, tzinfo=UTC)
+    spend(engine, job_run_id, "1.2499", at=yesterday)
+    now_spend = current_spend(engine, client._config.budget, NOW)
+    assert now_spend.today == 0
+    assert now_spend.month_to_date == Decimal("1.2499")
+    # What is left of the month, shared over the twelve days that remain.
+    assert now_spend.daily_allowance == (Decimal("15") - Decimal("1.2499")) / 12
+    assert ask(client, job_run_id, "relevant").status is LLMCallStatus.SUCCEEDED
+
+
+def test_the_monthly_cap_is_reported_when_both_limits_would_be_passed(
+    client: ModelClient, engine: Engine, job_run_id: int
+) -> None:
+    spend(engine, job_run_id, "15", at=NOW.replace(hour=1))
+    result = ask(client, job_run_id, "relevant")
+    assert rows(engine)[-1]["error_class"] == MONTHLY
+    assert "monthly budget" in (result.reason or "")
+
+
+def test_one_busy_day_cannot_use_up_the_month(
+    engine: Engine, config: ModelsConfig, job_run_id: int
+) -> None:
+    # A two-cent day. Each call has a 40,000-byte prompt: at most 41,000-odd tokens, in
+    # fact 10,000. Calls go through until a worst case would pass the allowance; the day
+    # then stops, and the month has hardly been touched.
+    two_cents = config.model_copy(
+        update={"budget": config.budget.model_copy(update={"daily_allowance": Decimal("0.02")})}
+    )
+    prompt = "word " * 8_000
+    answer = ModelResponse(
+        '{"relevant": false, "reason": "no"}',
+        "end_turn",
+        Usage(input_tokens=10_000, output_tokens=100),
+    )
+    client, backend = sequence_client(engine, two_cents, *([answer] * 40))
+    statuses = [ask(client, job_run_id, "relevant", user=prompt).status for _ in range(40)]
+    made = statuses.count(LLMCallStatus.SUCCEEDED)
+    assert made == 16  # 16 x $0.00105 = $0.0168, and a 17th could reach $0.0211
+    assert set(statuses[made:]) == {LLMCallStatus.BUDGET_REFUSED}
+    assert len(backend.requests) == made
+    assert month_to_date(engine, NOW) == Decimal("0.0168")
+    assert month_to_date(engine, NOW) <= Decimal("0.02")  # never over the day's allowance
+    assert {r["error_class"] for r in rows(engine)[made:]} == {DAILY}
+    assert current_spend(engine, two_cents.budget, NOW).left_this_month > Decimal("14.98")
+
+
+def test_actual_cost_never_exceeds_the_worst_case_that_was_checked(config: ModelsConfig) -> None:
+    # The byte count bounds the tokens, so a call that passed the check cannot cost more
+    # than the check allowed for. That is what makes the limits hold.
+    _, spec, _ = config.for_task(ModelTask.SCREENING)
+    for text in ("short", "word " * 8_000, "\u65e5\u672c\u8a9e " * 5_000, "x" * 400_000):
+        ceiling = prompt_token_ceiling(SYSTEM, text, json.dumps(Verdict.model_json_schema()))
+        worst = worst_case(config, text, MAX_OUTPUT_TOKENS)
+        # The most a real response could report: every bounded token, all uncached.
+        extreme = Usage(input_tokens=ceiling, output_tokens=MAX_OUTPUT_TOKENS)
+        assert cost(spec, extreme) == worst
+        cheaper = Usage(input_tokens=ceiling // 4, output_tokens=MAX_OUTPUT_TOKENS // 2)
+        assert cost(spec, cheaper) <= worst

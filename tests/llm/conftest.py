@@ -22,6 +22,7 @@ from ai_briefing.storage import database, repositories, schema
 
 RECORDED = Path(__file__).parent / "recorded"
 NOW = datetime(2026, 11, 19, 11, 15, tzinfo=UTC)
+EARLIER_THIS_MONTH = datetime(2026, 11, 3, 9, 0, tzinfo=UTC)
 HASH = "a" * 64
 SYSTEM = "You screen synthetic items for a test. Answer in the given shape."
 MAX_OUTPUT_TOKENS = 200
@@ -108,8 +109,11 @@ def client(engine: Engine, config: ModelsConfig, backend: CountingBackend) -> Mo
     )
 
 
-def spend(engine: Engine, job_run_id: int, amount: str, *, at: datetime = NOW) -> None:
-    """Record an earlier call that cost ``amount`` dollars."""
+def spend(
+    engine: Engine, job_run_id: int, amount: str, *, at: datetime = EARLIER_THIS_MONTH
+) -> None:
+    """Record an earlier call that cost ``amount`` dollars: by default on an earlier day
+    of this month, so that it counts against the month and not against today."""
     repositories.record_model_call(
         engine,
         LLMCall(

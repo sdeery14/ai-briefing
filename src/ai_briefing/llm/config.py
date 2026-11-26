@@ -93,6 +93,9 @@ class Budget(_Config):
     monthly_limit: Money
     provisional: bool
     shed_order: tuple[str, ...]
+    # A fixed amount per day. When it is not set, the day's allowance is what is left of
+    # the month shared equally over the days that remain (see ai_briefing.llm.budget).
+    daily_allowance: Money | None = None
 
 
 class ModelsConfig(_Config):

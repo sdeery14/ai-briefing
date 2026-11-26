@@ -2,12 +2,13 @@
 
 Every call goes through :meth:`ModelClient.call`, which in order:
 
-1. works out the most the call could cost, and refuses it if the month's spend plus that
-   amount would pass the budget;
+1. works out the most the call could cost, and refuses it if that would pass the monthly
+   cap or the day's allowance;
 2. sends the request, with no tools and no sampling parameters;
-3. validates the answer against the caller's schema before returning it;
-4. records the call, whatever happened: answered, refused by the model, refused by the
-   budget check, or failed.
+3. validates the answer against the caller's schema before returning it. An answer that
+   is not that shape is asked for once more, as a new request with its own budget check;
+4. records every request, whatever happened: answered, refused by the model, refused by
+   the budget check, or failed.
 
 The record is committed at once, on its own, so it survives whatever the job does next.
 A refusal or a failure is returned as a result, not raised: one bad call must not fail a
@@ -22,11 +23,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine
 
 from ai_briefing.domain.enums import LLMCallStatus, ModelTask
 from ai_briefing.domain.records import LLMCall
@@ -38,11 +38,16 @@ from ai_briefing.llm.backends import (
     ModelRequest,
     ModelResponse,
 )
+from ai_briefing.llm.budget import MONTHLY, current_spend
 from ai_briefing.llm.config import ModelsConfig
 from ai_briefing.llm.pricing import Usage, cost, prompt_token_ceiling, worst_case_cost
-from ai_briefing.storage import repositories, schema
+from ai_briefing.storage import repositories
 
 T = TypeVar("T", bound=BaseModel)
+
+
+# How many times an answer that fails validation is asked for again.
+VALIDATION_RETRIES = 1
 
 
 def utc_now() -> datetime:
@@ -57,20 +62,6 @@ class ModelResult[T: BaseModel]:
     call: LLMCall
     output: T | None = None
     reason: str | None = None  # why there is no output, in a few words
-
-
-def month_to_date(engine: Engine, now: datetime) -> Decimal:
-    """What has been spent on model calls so far this calendar month (UTC).
-
-    The budget's state is nothing but this sum over the recorded calls (RFC §5).
-    """
-    start = now.astimezone(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    calls = schema.llm_calls
-    with engine.connect() as connection:
-        spent = connection.execute(
-            select(calls.c.estimated_cost_usd).where(calls.c.created_at >= start)
-        ).scalars()
-        return sum(spent, Decimal(0))
 
 
 class ModelClient:
@@ -154,63 +145,85 @@ class ModelClient:
                 response_payload=response_text,
             )
 
-        # 1. The budget check, before anything is sent.
         ceiling = prompt_token_ceiling(system, user, json.dumps(output_schema))
         worst = worst_case_cost(spec, ceiling, max_output_tokens)
-        spent = month_to_date(self._engine, self._clock())
-        limit = self._config.budget.monthly_limit
-        if spent + worst > limit:
-            call = record(LLMCallStatus.BUDGET_REFUSED, error_class="BudgetExceeded")
-            return ModelResult(
-                LLMCallStatus.BUDGET_REFUSED,
-                call,
-                reason=(
-                    f"the monthly budget of {limit} {self._config.budget.currency} would be "
-                    f"passed: {spent} spent, up to {worst} more for this call"
-                ),
-            )
+        budget = self._config.budget
+        result: ModelResult[T] | None = None
+        # One request, and at most one more if the answer is not the asked shape (ADR-009).
+        for _attempt in range(1 + VALIDATION_RETRIES):
+            # 1. The budget check, before anything is sent. Made afresh for a retry.
+            spend = current_spend(self._engine, budget, self._clock())
+            refusal = spend.refusal(worst)
+            if refusal is not None:
+                call = record(LLMCallStatus.BUDGET_REFUSED, error_class=refusal)
+                limit, spent = (
+                    (f"monthly budget of {spend.monthly_limit}", spend.month_to_date)
+                    if refusal == MONTHLY
+                    else (f"allowance for the day of {spend.daily_allowance:.4f}", spend.today)
+                )
+                return ModelResult(
+                    LLMCallStatus.BUDGET_REFUSED,
+                    call,
+                    reason=(
+                        f"the {limit} {budget.currency} would be passed: "
+                        f"{spent} spent, up to {worst} more for this call"
+                    ),
+                )
 
-        # 2. The call.
-        started = self._timer()
-        try:
-            response = self._backend.create(request)
-        except BackendError as error:
+            # 2. The call.
+            started = self._timer()
+            try:
+                response = self._backend.create(request)
+            except BackendError as error:
+                latency = int((self._timer() - started) * 1000)
+                call = record(
+                    LLMCallStatus.FAILED, error_class=error.error_class, latency_ms=latency
+                )
+                return ModelResult(LLMCallStatus.FAILED, call, reason=error.error_class)
             latency = int((self._timer() - started) * 1000)
-            call = record(LLMCallStatus.FAILED, error_class=error.error_class, latency_ms=latency)
-            return ModelResult(LLMCallStatus.FAILED, call, reason=error.error_class)
-        latency = int((self._timer() - started) * 1000)
 
-        def outcome(
-            status: LLMCallStatus, *, error_class: str | None = None, reason: str | None = None
-        ) -> ModelResult[T]:
-            call = record(
-                status,
-                usage=response.usage,
-                error_class=error_class,
-                latency_ms=latency,
-                response_text=response.text,
-            )
-            return ModelResult(status, call, reason=reason or error_class)
+            def outcome(
+                status: LLMCallStatus,
+                *,
+                error_class: str | None = None,
+                reason: str | None = None,
+                response: ModelResponse = response,
+                latency: int = latency,
+            ) -> ModelResult[T]:
+                call = record(
+                    status,
+                    usage=response.usage,
+                    error_class=error_class,
+                    latency_ms=latency,
+                    response_text=response.text,
+                )
+                return ModelResult(status, call, reason=reason or error_class)
 
-        # 3. The answer, checked before anything can use it.
-        if response.stop_reason == REFUSAL:
-            # A refusal is a normal outcome. It is recorded, with what it cost.
-            return outcome(
-                LLMCallStatus.REFUSED,
-                reason=response.refusal_explanation or "the model declined",
-            )
-        if response.stop_reason == MAX_TOKENS:
-            return outcome(LLMCallStatus.FAILED, error_class="OutputTruncated")
-        output = _validated(response, output_type)
-        if output is None:
-            return outcome(LLMCallStatus.FAILED, error_class="InvalidOutput")
-        call = record(
-            LLMCallStatus.SUCCEEDED,
-            usage=response.usage,
-            latency_ms=latency,
-            response_text=response.text,
-        )
-        return ModelResult(LLMCallStatus.SUCCEEDED, call, output=output)
+            # 3. The answer, checked before anything can use it.
+            if response.stop_reason == REFUSAL:
+                # A refusal is a normal outcome. It is recorded, with what it cost.
+                return outcome(
+                    LLMCallStatus.REFUSED,
+                    reason=response.refusal_explanation or "the model declined",
+                )
+            if response.stop_reason == MAX_TOKENS:
+                # Asking again with the same limit would be cut off again.
+                return outcome(LLMCallStatus.FAILED, error_class="OutputTruncated")
+            output = _validated(response, output_type)
+            if output is not None:
+                call = record(
+                    LLMCallStatus.SUCCEEDED,
+                    usage=response.usage,
+                    latency_ms=latency,
+                    response_text=response.text,
+                )
+                return ModelResult(LLMCallStatus.SUCCEEDED, call, output=output)
+            # Not the asked shape. This request is recorded as failed; the loop asks once
+            # more, and a second failure is the result.
+            result = outcome(LLMCallStatus.FAILED, error_class="InvalidOutput")
+        if result is None:  # pragma: no cover - the loop always runs at least once
+            raise RuntimeError("no model request was made")
+        return result
 
 
 def _validated[T: BaseModel](response: ModelResponse, output_type: type[T]) -> T | None:
