@@ -44,6 +44,7 @@ from ai_briefing.domain.enums import (
     LLMCallStatus,
     MembershipAction,
     ModelTask,
+    ScreeningOutcome,
     SourceKind,
     SourceMode,
     SourceRole,
@@ -157,6 +158,22 @@ document_observations = Table(
     Column("content_hash", String(64), nullable=False),
     _one_of("fetch_status", FetchStatus, "fetch_status"),
     CheckConstraint("body_purged_at IS NULL OR body_text IS NULL", name="purged_body_is_gone"),
+)
+
+screening_decisions = Table(
+    "screening_decisions",
+    metadata,
+    _pk(),
+    Column("document_id", ForeignKey("source_documents.id"), nullable=False),
+    Column("outcome", String(20), nullable=False),
+    Column("relevance", Integer, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("model_call_id", ForeignKey("llm_calls.id"), nullable=False),
+    Column("decided_at", UtcDateTime, nullable=False),
+    # One decision per document. Screening a document again is a later concern.
+    UniqueConstraint("document_id", name="uq_screening_decisions_document"),
+    _one_of("outcome", ScreeningOutcome, "outcome"),
+    CheckConstraint("relevance BETWEEN 0 AND 4", name="relevance_range"),
 )
 
 stories = Table(
@@ -364,6 +381,7 @@ job_runs = Table(
 
 # Never updated, never deleted.
 APPEND_ONLY = (
+    "screening_decisions",
     "story_membership_events",
     "editorial_assessments",
     "assessment_inputs",

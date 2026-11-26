@@ -340,10 +340,10 @@ def test_db_upgrade_creates_and_migrates_the_database(
     database_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["db", "upgrade", "--database", str(database_file)]) == 0
-    assert "upgraded from empty to 0001_first_schema" in capsys.readouterr().out
+    assert "upgraded from empty to 0002_screening_decisions" in capsys.readouterr().out
     assert database_file.is_file()
     assert cli.main(["db", "upgrade", "--database", str(database_file)]) == 0
-    assert "already at 0001_first_schema" in capsys.readouterr().out
+    assert "already at 0002_screening_decisions" in capsys.readouterr().out
 
 
 def test_db_upgrade_uses_the_environment_when_no_path_is_given(

@@ -18,6 +18,8 @@ from ai_briefing.storage import database, schema
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO_ROOT / "migrations"
 FIRST = "0001_first_schema"
+HEAD = "0002_screening_decisions"
+REVISIONS = (FIRST, HEAD)
 
 
 def tables(engine: Engine) -> set[str]:
@@ -35,7 +37,7 @@ def triggers(engine: Engine) -> dict[str, str]:
 def test_an_empty_database_upgrades_to_the_head_revision(empty_engine: Engine) -> None:
     assert database.current_revision(empty_engine) is None
     database.upgrade(empty_engine)
-    assert database.current_revision(empty_engine) == database.head_revision() == FIRST
+    assert database.current_revision(empty_engine) == database.head_revision() == HEAD
     assert tables(empty_engine) == {*schema.metadata.tables, "alembic_version"}
 
 
@@ -74,11 +76,25 @@ def test_the_migrated_triggers_are_the_ones_the_schema_module_defines(engine: En
 
 
 def test_the_migration_is_frozen_and_uses_batch_mode() -> None:
-    migration = (MIGRATIONS / "versions" / f"{FIRST}.py").read_text(encoding="utf-8")
-    # A migration that imported the application would change when the application does.
-    assert not re.search(r"^\s*(?:from|import)\s+ai_briefing", migration, re.MULTILINE)
+    for revision in REVISIONS:
+        migration = (MIGRATIONS / "versions" / f"{revision}.py").read_text(encoding="utf-8")
+        # A migration that imported the application would change when the application does.
+        assert not re.search(r"^\s*(?:from|import)\s+ai_briefing", migration, re.MULTILINE)
     assert "render_as_batch=True" in (MIGRATIONS / "env.py").read_text(encoding="utf-8")
-    assert [p.name for p in (MIGRATIONS / "versions").glob("*.py")] == [f"{FIRST}.py"]
+    found = sorted(p.name for p in (MIGRATIONS / "versions").glob("*.py"))
+    assert found == [f"{revision}.py" for revision in REVISIONS]
+
+
+def test_each_migration_can_be_undone_one_step_at_a_time(empty_engine: Engine) -> None:
+    database.upgrade(empty_engine)
+    for revision in reversed(REVISIONS[:-1]):
+        database.downgrade(empty_engine, revision)
+        assert database.current_revision(empty_engine) == revision
+    assert "screening_decisions" not in tables(empty_engine)
+    assert "source_documents" in tables(empty_engine)
+    assert not [name for name in triggers(empty_engine) if name.startswith("screening_")]
+    database.upgrade(empty_engine)
+    assert database.current_revision(empty_engine) == HEAD
 
 
 def test_every_connection_has_the_required_settings(engine: Engine) -> None:

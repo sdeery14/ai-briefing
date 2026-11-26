@@ -21,6 +21,7 @@ dependencies = [
   "pyyaml>=6.0",      # reads config/*.yaml
   "anthropic>=1.0",   # the one model provider (ADR-009, M1 issue 1.5)
   "feedparser>=6.0",  # RSS and Atom (M1 issue 1.4)
+  "tzdata>=2025.1",   # time zones for a briefing's local date, where the system has none
 ]
 
 [project.scripts]

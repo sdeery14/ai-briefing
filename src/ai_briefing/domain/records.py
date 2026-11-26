@@ -49,6 +49,7 @@ from ai_briefing.domain.enums import (
     MembershipAction,
     ModelSubmission,
     ModelTask,
+    ScreeningOutcome,
     SourceKind,
     SourceMode,
     SourceRole,
@@ -260,6 +261,20 @@ class DocumentObservation(Record):
         if self.body_purged_at is not None and self.body_text is not None:
             raise ValueError("an observation whose body was purged holds no body text")
         return self
+
+
+class ScreeningDecision(Record):
+    """Whether an item is worth assessing, and why. Every screened item has one, so a
+    missed item can be found afterwards (RFC §4 step 4).
+    """
+
+    id: RecordId | None = None
+    document_id: RecordId
+    outcome: ScreeningOutcome
+    relevance: Score
+    reason: NonEmptyStr
+    model_call_id: RecordId
+    decided_at: UtcDatetime
 
 
 # --- Stories -------------------------------------------------------------------------------

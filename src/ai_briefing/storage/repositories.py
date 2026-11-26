@@ -39,6 +39,7 @@ from ai_briefing.domain.records import (
     JobRun,
     LLMCall,
     Record,
+    ScreeningDecision,
     Source,
     SourceDocument,
     Story,
@@ -109,6 +110,7 @@ _STORED: dict[
 ] = {
     SourceDocument: (schema.source_documents, _columns, dict),
     DocumentObservation: (schema.document_observations, _columns, dict),
+    ScreeningDecision: (schema.screening_decisions, _columns, dict),
     Story: (schema.stories, _columns, dict),
     StoryMembershipEvent: (schema.story_membership_events, _columns, dict),
     EditorialAssessment: (schema.editorial_assessments, _assessment_to_row, _assessment_from_row),

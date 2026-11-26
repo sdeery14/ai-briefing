@@ -72,6 +72,13 @@ class FetchStatus(StrEnum):
     FAILED = "failed"
 
 
+class ScreeningOutcome(StrEnum):
+    """What screening concluded about an item."""
+
+    PASSED = "passed"
+    REJECTED = "rejected"
+
+
 class StoryState(StrEnum):
     OPEN = "open"
     DORMANT = "dormant"
