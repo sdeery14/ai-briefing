@@ -1,6 +1,6 @@
 # ADR 013 — The development round merges eligible changes
 
-**Status:** Accepted (owner, 2026-11-25). The owner authorised this change explicitly and asked for it to be implemented; it takes effect when the owner merges the pull request that adds this record.
+**Status:** Accepted (owner, 2026-11-25); the dependency exception was removed by the owner on 2026-11-26. The owner authorised this change explicitly and asked for it to be implemented; it takes effect when the owner merges the pull request that adds this record.
 **Date:** 2026-11-25
 **Amends:** [ADR-011](011-development-workflow-and-merge-authority.md). It replaces Phase A's rule that the owner merges every pull request, and removes Phase B's preconditions of a separate agent identity and an isolated environment. Everything else in ADR-011 stands: the protected paths, the input allowlist, P0 escalation, the two-fix-round limit, the review workflow.
 
@@ -51,15 +51,14 @@ A pull request that touches any of these is never merged by the round. It is lef
 | Decisions | `docs/adr/**`, `docs/rfc/**` | ProjectBudget's exception for decision records, extended to the RFC |
 | Workflows | `.github/**` | ProjectBudget's exception for workflows |
 | Migrations | `migrations/**` | ProjectBudget's exception |
-| Dependencies | `pyproject.toml` | ProjectBudget's exception for dependency changes. Any change to the file counts, since the round decides from file names |
 | Evaluation | `src/ai_briefing/evaluation/**`, `evals/**` | This project: the owner's evaluation decisions |
 | Models, budget, sources | `config/**` | This project: source approvals, model choice and spend |
 | Deployment | `deploy/**`, container and Compose files | This project: deployment is the owner's to authorise |
 | Agent workflow | `.claude/**`, `scripts/**`, `AGENTS.md`, `CLAUDE.md`, `CODEOWNERS` | This project: the agent must not be able to loosen its own controls, including this rule |
 
-The first four are ProjectBudget's exceptions, as the owner asked. ProjectBudget's fifth, released sections of `CHANGELOG.md`, has no counterpart: this project has no changelog. The last four were not in ProjectBudget's list. They are kept because they are the decisions the owner reserved when handing over routine development (source approvals, evaluation, deployment) and the controls themselves. They are rarely touched by M1 issues. The owner can remove any of them by editing the list in `scripts/merge_eligibility.py`.
+The first three are ProjectBudget's exceptions, as the owner asked. Two of ProjectBudget's are not carried over. Released sections of `CHANGELOG.md` have no counterpart: this project has no changelog. **Dependency changes in `pyproject.toml` were an exception when this record was accepted and were removed by the owner on 2026-11-26**, because nearly every early M1 issue adds a dependency, so the exception left the owner merging almost everything. The review bot checks each new dependency and its licence, and the lock file pins exact versions. The last four were not in ProjectBudget's list. They are kept because they are the decisions the owner reserved when handing over routine development (source approvals, evaluation, deployment) and the controls themselves. They are rarely touched by M1 issues. The owner can remove any of them by editing the list in `scripts/merge_eligibility.py`.
 
-The remaining ADR-011 protected paths (`uv.lock`, `schemas/**`, prompts, editorial policy, golden files and recorded responses) stay protected: a change is declared in the pull request and reviewed with care. The round may merge it.
+The remaining ADR-011 protected paths (`pyproject.toml`, `uv.lock`, `schemas/**`, prompts, editorial policy, golden files and recorded responses) stay protected: a change is declared in the pull request and reviewed with care. The round may merge it.
 
 ### What stays with the owner
 
@@ -77,7 +76,7 @@ The agent acts with the owner's GitHub rights. Nothing technical stops it from m
 - Development runs offline against synthetic fixtures, so little untrusted content reaches the agent while it works.
 - Nothing is deployed from this repository, and a squash merge can be reverted.
 
-The main cost: prompts, editorial policy, schemas and lock-file changes can now merge without the owner reading them. The owner will judge prompts and policy by the briefings they produce and by the 14-day comparison, not by reading each change.
+The main cost: prompts, editorial policy, schemas and dependency changes can now merge without the owner reading them. The owner will judge prompts and policy by the briefings they produce and by the 14-day comparison, not by reading each change.
 
 ## Alternatives considered
 
@@ -92,7 +91,8 @@ The main cost: prompts, editorial policy, schemas and lock-file changes can now 
 ## Consequences
 
 - M1 can proceed through its issues without the owner, stopping at owner-only changes and at `needs-human`.
-- **Several M1 issues will still wait for the owner**, because they add a dependency (`pyproject.toml`) or a migration: 1.2, 1.3, 1.4 and 1.5 at least. That follows from carrying over ProjectBudget's exceptions. If it proves too much, the owner can drop `pyproject.toml` from the list.
+- An M1 issue that adds a migration still waits for the owner: 1.3 at least. Issues that only add a dependency no longer do, since the owner removed that exception on 2026-11-26.
+- A new dependency can now reach `main` without the owner reading it. It is checked by the review bot, including its licence, and pinned by the lock file.
 - A defect in a prompt or policy can reach `main` unread. It is caught, if at all, by the review bot, the tests and the owner's use of the product.
 - `.github/CODEOWNERS` now lists the owner-only paths. It still enforces nothing unless the owner turns on code-owner review.
 - ADR-011's validation that depends on the owner being the only merger no longer applies; its Phase B demonstration is replaced by the tests named below.

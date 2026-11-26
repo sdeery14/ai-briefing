@@ -21,7 +21,7 @@ Nothing in this file restricts what an agent can technically do. `CODEOWNERS` an
 These are not judgement calls. If an issue cannot be done without breaking one, stop and tell the owner.
 
 - **Never merge a pull request except through `scripts/round_outcome.py merge`, and never enable auto-merge.** ADR-013: that command merges a pull request only when its required checks pass, the review of its head commit is complete with every thread resolved, it is not labelled `needs-human`, and it touches no owner-only path. If it refuses, the pull request is the owner's to merge. Do not merge by any other route.
-- **Never merge a change to an owner-only path**: `docs/rfc/**`, `docs/adr/**`, `.github/**`, `migrations/**`, `pyproject.toml`, `src/ai_briefing/evaluation/**`, `evals/**`, `config/**`, `deploy/**` and container files, `.claude/**`, `scripts/**`, `AGENTS.md`, `CLAUDE.md`, `CODEOWNERS`. The owner merges those.
+- **Never merge a change to an owner-only path**: `docs/rfc/**`, `docs/adr/**`, `.github/**`, `migrations/**`, `src/ai_briefing/evaluation/**`, `evals/**`, `config/**`, `deploy/**` and container files, `.claude/**`, `scripts/**`, `AGENTS.md`, `CLAUDE.md`, `CODEOWNERS`. The owner merges those.
 - Never push to `main`, force-push, or rewrite published history.
 - Never tag, release, publish a package, or deploy.
 - Never change repository settings, rulesets, branch protection or secrets.
