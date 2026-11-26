@@ -56,9 +56,14 @@ def run_job(
     configuration_hash: str,
     work: Work,
     prepare: Prepare | None = None,
+    run_again: bool = False,
     clock: Clock = utc_now,
 ) -> JobOutcome:
     """Run a job unless this key has already succeeded.
+
+    With ``run_again`` the job runs even if the key succeeded before, reusing its record.
+    That is for a job whose own work is what makes a repeat harmless, such as composing a
+    briefing, which stores a new version only when the content differs.
 
     The caller holds the job lock (:func:`ai_briefing.storage.lock.job_lock`), so no other
     writer runs at the same time and a run left ``running`` by a crash can be taken over.
@@ -70,7 +75,8 @@ def run_job(
                 runs.c.idempotency_key == idempotency_key
             )
         ).one_or_none()
-        if existing is not None and existing.status == JobStatus.SUCCEEDED.value:
+        succeeded = existing is not None and existing.status == JobStatus.SUCCEEDED.value
+        if existing is not None and succeeded and not run_again:
             return JobOutcome(existing.id, ran=False, counts=json.loads(existing.counts))
         values = {
             "job": job,
@@ -87,7 +93,8 @@ def run_job(
                 insert(runs).values(idempotency_key=idempotency_key, **values).returning(runs.c.id)
             ).scalar_one()
         else:
-            # An earlier attempt failed, or crashed while running. The same row is used again.
+            # An earlier attempt failed or crashed, or the job is one that runs again.
+            # The same row is used.
             job_run_id = existing.id
             connection.execute(update(runs).where(runs.c.id == job_run_id).values(**values))
     try:

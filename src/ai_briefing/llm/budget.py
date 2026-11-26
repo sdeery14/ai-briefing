@@ -86,3 +86,37 @@ def current_spend(engine: Engine, budget: Budget, now: datetime) -> Spend:
         monthly_limit=budget.monthly_limit,
         daily_allowance=daily_allowance(budget, month - today, moment),
     )
+
+
+@dataclass(frozen=True)
+class TaskSpend:
+    task: str
+    calls: int
+    cost: Decimal
+    tokens_in: int
+    tokens_out: int
+
+
+def spend_by_task(engine: Engine, now: datetime) -> list[TaskSpend]:
+    """This month's recorded calls, grouped by task. Every call counts, whatever its
+    outcome: answered, refused, failed, or stopped by the budget check."""
+    moment = now.astimezone(UTC)
+    start = moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    calls = schema.llm_calls
+    totals: dict[str, list[Decimal | int]] = {}
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                calls.c.purpose, calls.c.estimated_cost_usd, calls.c.tokens_in, calls.c.tokens_out
+            ).where(calls.c.created_at >= start)
+        ).all()
+    for row in rows:
+        total = totals.setdefault(row.purpose, [0, Decimal(0), 0, 0])
+        total[0] += 1
+        total[1] += row.estimated_cost_usd
+        total[2] += row.tokens_in
+        total[3] += row.tokens_out
+    return [
+        TaskSpend(task, int(t[0]), Decimal(t[1]), int(t[2]), int(t[3]))
+        for task, t in sorted(totals.items())
+    ]

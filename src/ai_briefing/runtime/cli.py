@@ -1,7 +1,8 @@
 """The ``ai-briefing`` command.
 
 Subcommands are added by the issues that implement them (RFC §3.5). So far there are
-``db upgrade``, ``sources list``, ``collect``, ``process`` and ``briefing generate``.
+``db upgrade``, ``sources list``, ``collect``, ``process``, ``briefing generate``,
+``run``, ``doctor`` and ``budget status``.
 """
 
 from __future__ import annotations
@@ -74,6 +75,29 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument(
         "--format", choices=("markdown", "json"), default="markdown", help="what to print"
     )
+
+    run = commands.add_parser(
+        "run", help="run the day's jobs in order: collect, process, compose the briefing"
+    )
+    run.add_argument("--date", help="the local date to run for (default: today)")
+    run.add_argument("--timezone", help=TIMEZONE_HELP)
+    run.add_argument("--database", help=DATABASE_HELP)
+    run.add_argument(
+        "--replay",
+        metavar="DIR",
+        help="answer model calls from recorded responses in DIR; uses no API key",
+    )
+
+    doctor = commands.add_parser(
+        "doctor", help="check the database, sources, runs, budget and disk"
+    )
+    doctor.add_argument("--database", help=DATABASE_HELP)
+
+    budget = commands.add_parser("budget", help="show model spend")
+    budget_commands = budget.add_subparsers(dest="budget_command", metavar="action", required=True)
+    status = budget_commands.add_parser("status", help="spend this month against the cap, by task")
+    status.add_argument("--database", help=DATABASE_HELP)
+    status.add_argument("--format", choices=("text", "json"), default="text", help="what to print")
     return parser
 
 
@@ -266,8 +290,9 @@ def _process(
 def _briefing_generate(
     database: str | None, date_text: str | None, timezone_text: str | None, output: str
 ) -> int:
-    from ai_briefing.briefings.compose import BriefingError, compose
+    from ai_briefing.briefings.compose import BriefingError
     from ai_briefing.briefings.render import to_markdown
+    from ai_briefing.runtime.daily import compose_job
     from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
     from ai_briefing.storage import database as storage
     from ai_briefing.storage.lock import LockHeld, job_lock
@@ -281,15 +306,18 @@ def _briefing_generate(
         with job_lock(path):
             engine = storage.create_database_engine(path)
             try:
-                with engine.begin() as connection:
-                    composed = compose(
-                        connection,
-                        catalogue,
-                        local_date=day,
-                        timezone=timezone,
-                        configuration_hash=_configuration_hash(),
-                        now=datetime.now(UTC),
+                if storage.current_revision(engine) != storage.head_revision():
+                    raise storage.StorageError(
+                        f"{path} is not at the current schema; run `ai-briefing db upgrade`"
                     )
+                composed = compose_job(
+                    engine,
+                    catalogue,
+                    local_date=day,
+                    timezone=timezone,
+                    application_version=__version__,
+                    configuration_hash=_configuration_hash(),
+                )
             finally:
                 engine.dispose()
     except (
@@ -309,6 +337,178 @@ def _briefing_generate(
     return 0
 
 
+def _run_day(
+    database: str | None, date_text: str | None, timezone_text: str | None, replay: str | None
+) -> int:
+    from pathlib import Path
+
+    from ai_briefing.domain.enums import ModelTask
+    from ai_briefing.llm.backends import AnthropicBackend, Backend, ReplayBackend
+    from ai_briefing.llm.client import ModelClient
+    from ai_briefing.llm.config import ModelsConfigError, load_models_config
+    from ai_briefing.llm.credentials import MissingApiKey, load_api_key
+    from ai_briefing.runtime.daily import run_day
+    from ai_briefing.runtime.logs import JsonLog
+    from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
+    from ai_briefing.storage import database as storage
+    from ai_briefing.storage.lock import LockHeld, job_lock
+
+    path = storage.database_path(database)
+    try:
+        day, timezone = _day(date_text, timezone_text)
+        catalogue = load_catalogue()
+        config = load_models_config()
+        backend: Backend
+        if replay is not None:
+            backend = ReplayBackend(Path(replay))
+        else:
+            key = load_api_key(config.provider.api_key_env)
+            backend = AnthropicBackend(key, api_version=config.provider.api_version)
+        if not path.is_file():
+            raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
+        with job_lock(path):
+            engine = storage.create_database_engine(path)
+            try:
+                if storage.current_revision(engine) != storage.head_revision():
+                    raise storage.StorageError(
+                        f"{path} is not at the current schema; run `ai-briefing db upgrade`"
+                    )
+                result = run_day(
+                    engine,
+                    catalogue,
+                    ModelClient(engine=engine, config=config, backend=backend),
+                    make_fetcher(),
+                    model_id=config.for_task(ModelTask.ASSESSMENT)[0],
+                    local_date=day,
+                    timezone=timezone,
+                    application_version=__version__,
+                    configuration_hash=_configuration_hash(),
+                    log=JsonLog(),
+                )
+            finally:
+                engine.dispose()
+    except (
+        CatalogueError,
+        ModelsConfigError,
+        MissingApiKey,
+        LockHeld,
+        storage.StorageError,
+        ValueError,
+        OSError,
+    ) as error:
+        return _fail(error)
+    summary = {
+        "day": result.day,
+        "ok": result.ok,
+        "failed": result.failed,
+        "already_run": result.skipped,
+        "briefing_id": result.briefing_id,
+        "briefing_status": result.briefing_status,
+        "stages": {name: dict(counts) for name, counts in result.stages.items()},
+    }
+    sys.stdout.write(json.dumps(summary, sort_keys=True) + "\n")
+    # A stage that failed is reported in the exit status, so a scheduler notices.
+    return 0 if result.ok else 2
+
+
+def _doctor(database: str | None) -> int:
+    from ai_briefing.llm.config import ModelsConfigError, load_models_config
+    from ai_briefing.runtime import doctor
+    from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
+    from ai_briefing.storage import database as storage
+
+    path = storage.database_path(database)
+    now = datetime.now(UTC)
+    checks: list[doctor.Check] = []
+    try:
+        catalogue = load_catalogue()
+        enabled = sum(1 for source in catalogue if source.enabled)
+        checks.append(
+            doctor.Check("catalogue", doctor.OK, f"{enabled} of {len(catalogue)} sources enabled")
+        )
+    except CatalogueError as error:
+        catalogue = ()
+        checks.append(doctor.Check("catalogue", doctor.FAIL, str(error)[:200]))
+    try:
+        config = load_models_config()
+        checks.append(doctor.Check("models", doctor.OK, f"{len(config.models)} models configured"))
+    except ModelsConfigError as error:
+        config = None
+        checks.append(doctor.Check("models", doctor.FAIL, str(error)[:200]))
+    database_check, usable = doctor.check_database(path)
+    checks.append(database_check)
+    checks.append(doctor.check_disk(path))
+    if usable:
+        engine = storage.create_database_engine(path)
+        try:
+            checks += doctor.check_sources(engine, catalogue, now)
+            checks += doctor.check_last_runs(engine)
+            if config is not None:
+                checks.append(doctor.check_budget(engine, config.budget, now))
+        finally:
+            engine.dispose()
+    sys.stdout.write(doctor.render(checks))
+    return 1 if doctor.worst(checks) == doctor.FAIL else 0
+
+
+def _budget_status(database: str | None, output: str) -> int:
+    from ai_briefing.llm.budget import current_spend, spend_by_task
+    from ai_briefing.llm.config import ModelsConfigError, load_models_config
+    from ai_briefing.storage import database as storage
+
+    path = storage.database_path(database)
+    now = datetime.now(UTC)
+    try:
+        config = load_models_config()
+        if not path.is_file():
+            raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
+        engine = storage.create_database_engine(path)
+        try:
+            spend = current_spend(engine, config.budget, now)
+            tasks = spend_by_task(engine, now)
+        finally:
+            engine.dispose()
+    except (ModelsConfigError, storage.StorageError, OSError) as error:
+        return _fail(error)
+    currency = config.budget.currency
+    if output == "json":
+        document = {
+            "currency": currency,
+            "month": now.strftime("%Y-%m"),
+            "month_to_date": str(spend.month_to_date),
+            "monthly_limit": str(spend.monthly_limit),
+            "left_this_month": str(spend.left_this_month),
+            "today": str(spend.today),
+            "daily_allowance": str(spend.daily_allowance),
+            "tasks": [
+                {
+                    "task": t.task,
+                    "calls": t.calls,
+                    "cost": str(t.cost),
+                    "tokens_in": t.tokens_in,
+                    "tokens_out": t.tokens_out,
+                }
+                for t in tasks
+            ],
+        }
+        sys.stdout.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
+        return 0
+    lines = [
+        f"Month {now:%Y-%m}: {spend.month_to_date:.4f} of {spend.monthly_limit:.2f} {currency} "
+        f"spent, "
+        f"{spend.left_this_month:.4f} left",
+        f"Today:        {spend.today:.4f} of {spend.daily_allowance:.4f} {currency} allowed",
+        "",
+        f"{'task':<22}{'calls':>7}{'tokens in':>12}{'tokens out':>12}{'cost':>12}",
+    ]
+    for t in tasks:
+        lines.append(f"{t.task:<22}{t.calls:>7}{t.tokens_in:>12}{t.tokens_out:>12}{t.cost:>12.4f}")
+    if not tasks:
+        lines.append("(no model calls recorded this month)")
+    sys.stdout.write("\n".join(lines) + "\n")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command. ``--help`` and ``--version`` exit through argparse with status 0."""
     parser = build_parser()
@@ -323,6 +523,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _process(args.database, args.date, args.timezone, args.replay)
     if args.command == "briefing" and args.briefing_command == "generate":
         return _briefing_generate(args.database, args.date, args.timezone, args.format)
+    if args.command == "run":
+        return _run_day(args.database, args.date, args.timezone, args.replay)
+    if args.command == "doctor":
+        return _doctor(args.database)
+    if args.command == "budget" and args.budget_command == "status":
+        return _budget_status(args.database, args.format)
     # No command given: show what the command is.
     parser.print_help()
     return 0
