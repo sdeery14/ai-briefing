@@ -5,9 +5,13 @@ function here that updates or deletes a history record, and the database's own t
 refuse it if some other code tries (see ``migrations/``). Queries that only a later issue
 needs are added by that issue.
 
-Every function takes an open connection, so the caller decides the transaction. A job
-passes the connection :func:`ai_briefing.storage.jobs.run_job` gives it, which makes the
-job's writes and its completion one transaction.
+Almost every function takes an open connection, so the caller decides the transaction. A
+job passes the connection :func:`ai_briefing.storage.jobs.run_job` gives it, which makes
+the job's writes and its completion one transaction.
+
+The exception is :func:`record_model_call`. A model call has been paid for whatever
+happens next, so its record is committed at once, in a transaction of its own, and cannot
+be lost when a job fails and rolls back.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, TypeVar
 
-from sqlalchemy import Table, delete, insert, select
+from sqlalchemy import Engine, Table, delete, insert, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection
 
@@ -115,13 +119,13 @@ _STORED: dict[
     LLMCall: (schema.llm_calls, _columns, _call_from_row),
     JobRun: (schema.job_runs, _columns, _job_from_row),
 }
-# Written only by run_job, so that a job's record and its work stay in one transaction.
-_NOT_ADDED_HERE = (JobRun,)
+# JobRun is written only by run_job. LLMCall is written only by record_model_call, in its
+# own transaction, so that a job that rolls back cannot take the record of a paid call
+# with it.
+_NOT_ADDED_HERE = (JobRun, LLMCall)
 
 
-def add[R: Record](
-    connection: Connection, record: R, *, now: Callable[[], datetime] = utc_now
-) -> R:
+def add[R: Record](connection: Connection, record: R) -> R:
     """Insert a new record and return it with the id the database gave it."""
     kind = type(record)
     if kind in _NOT_ADDED_HERE or kind not in _STORED:
@@ -129,11 +133,31 @@ def add[R: Record](
     if getattr(record, "id", None) is not None:
         raise ValueError(f"this {kind.__name__} already has an id; history is not rewritten")
     table, to_row, _ = _STORED[kind]
-    values = to_row(record)
-    if isinstance(record, LLMCall):
-        values["created_at"] = now()
-    new_id = connection.execute(insert(table).values(**values).returning(table.c.id)).scalar_one()
+    new_id = connection.execute(
+        insert(table).values(**to_row(record)).returning(table.c.id)
+    ).scalar_one()
     return record.model_copy(update={"id": new_id})
+
+
+def record_model_call(
+    engine: Engine, call: LLMCall, *, now: Callable[[], datetime] = utc_now
+) -> LLMCall:
+    """Record a model call durably, at once, and return it with its id.
+
+    This opens and commits its own transaction. Call it from a job's ``prepare`` step,
+    where no transaction is open: SQLite has one writer, so calling it while the job's
+    write transaction is open would wait for that transaction and then fail.
+    """
+    if call.id is not None:
+        raise ValueError("this LLMCall already has an id; history is not rewritten")
+    table = schema.llm_calls
+    values = _columns(call)
+    values["created_at"] = now()
+    with engine.begin() as connection:
+        new_id = connection.execute(
+            insert(table).values(**values).returning(table.c.id)
+        ).scalar_one()
+    return call.model_copy(update={"id": new_id})
 
 
 def get[R: Record](connection: Connection, kind: type[R], record_id: int) -> R | None:

@@ -35,8 +35,7 @@ from .conftest import NOW, OTHER_HASH, Chain, add_chain, add_job_run, model_call
 
 @pytest.fixture
 def chain(engine: Engine) -> Chain:
-    with engine.begin() as connection:
-        return add_chain(connection)
+    return add_chain(engine)
 
 
 # --- Round trips ------------------------------------------------------------------------------
@@ -115,11 +114,12 @@ def test_times_are_stored_in_utc_and_a_naive_time_is_refused(engine: Engine) -> 
 def test_money_is_stored_exactly(engine: Engine) -> None:
     with engine.begin() as connection:
         job_run_id = add_job_run(connection)
-        tiny = model_call(job_run_id).model_copy(
-            update={"estimated_cost_usd": Decimal("0.000000100000000001")}
-        )
-        stored = repositories.add(connection, tiny, now=lambda: NOW)
-        assert stored.id is not None
+    tiny = model_call(job_run_id).model_copy(
+        update={"estimated_cost_usd": Decimal("0.000000100000000001")}
+    )
+    stored = repositories.record_model_call(engine, tiny, now=lambda: NOW)
+    assert stored.id is not None
+    with engine.connect() as connection:
         read = repositories.get(connection, LLMCall, stored.id)
     assert read is not None
     assert read.estimated_cost_usd == Decimal("0.000000100000000001")
@@ -162,7 +162,7 @@ def test_the_repository_offers_no_way_to_rewrite_history() -> None:
     # on the current-state table, which is derived data and not history.
     source = Path(repositories.__file__).read_text(encoding="utf-8")
     imported = re.findall(r"^from sqlalchemy import (.+)$", source, re.MULTILINE)
-    assert imported == ["Table, delete, insert, select"]
+    assert imported == ["Engine, Table, delete, insert, select"]
     assert source.count("delete(") == 1
     assert "delete(current)" in source
 
@@ -175,6 +175,17 @@ def test_a_record_that_already_has_an_id_cannot_be_added_again(
         engine.begin() as connection,
     ):
         repositories.add(connection, chain.evidence)
+
+
+def test_a_model_call_is_recorded_only_through_its_own_durable_function(engine: Engine) -> None:
+    with engine.begin() as connection:
+        job_run_id = add_job_run(connection)
+    with pytest.raises(TypeError, match="not added through"), engine.begin() as connection:
+        repositories.add(connection, model_call(job_run_id))
+    stored = repositories.record_model_call(engine, model_call(job_run_id), now=lambda: NOW)
+    assert stored.id is not None
+    with pytest.raises(ValueError, match="history is not rewritten"):
+        repositories.record_model_call(engine, stored)
 
 
 def test_a_job_run_is_written_only_by_the_job_runner(engine: Engine) -> None:

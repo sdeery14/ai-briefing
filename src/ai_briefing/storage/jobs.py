@@ -1,9 +1,18 @@
 """Running a job once per idempotency key (ADR-002, RFC §5 ``JobRun``).
 
-A job's work and the record that it succeeded are written in one transaction. So either
-both exist or neither does, and running a key that has already succeeded does nothing.
-A failure rolls the work back and is then recorded on its own, so it can be seen and the
-key can be run again.
+A job has three steps, each its own transaction:
+
+1. The run is recorded as ``running``, and committed, so that anything the job does next
+   can refer to it.
+2. ``prepare`` runs with no transaction open. This is where a job calls a model. Each call
+   is recorded at once, in its own transaction, by
+   :func:`ai_briefing.storage.repositories.record_model_call`. A call costs money whether
+   or not the job goes on to succeed, so its record must not depend on the job's success.
+3. ``work`` writes the job's results, and the run is marked ``succeeded``, in one
+   transaction. Either both exist or neither does.
+
+Running a key that has already succeeded does nothing. A failure rolls step 3 back, is
+recorded, and leaves the key free to run again; the model calls already recorded stay.
 """
 
 from __future__ import annotations
@@ -20,9 +29,11 @@ from ai_briefing.domain.enums import JobStatus
 from ai_briefing.storage import schema
 
 Clock = Callable[[], datetime]
+Prepare = Callable[[int], None]
+"""Step 2: given the job run's id, do whatever must happen outside a transaction."""
 Work = Callable[[Connection, int], Mapping[str, int] | None]
-"""The job's work: given the open transaction and the job run's id, do the writes and
-return counts to record."""
+"""Step 3: given the open transaction and the job run's id, write the results and return
+counts to record."""
 
 
 def utc_now() -> datetime:
@@ -44,44 +55,45 @@ def run_job(
     application_version: str,
     configuration_hash: str,
     work: Work,
+    prepare: Prepare | None = None,
     clock: Clock = utc_now,
 ) -> JobOutcome:
-    """Run ``work`` unless this key has already succeeded.
+    """Run a job unless this key has already succeeded.
 
     The caller holds the job lock (:func:`ai_briefing.storage.lock.job_lock`), so no other
-    writer runs at the same time.
+    writer runs at the same time and a run left ``running`` by a crash can be taken over.
     """
     runs = schema.job_runs
-    started = clock()
+    with engine.begin() as connection:
+        existing = connection.execute(
+            select(runs.c.id, runs.c.status, runs.c.counts).where(
+                runs.c.idempotency_key == idempotency_key
+            )
+        ).one_or_none()
+        if existing is not None and existing.status == JobStatus.SUCCEEDED.value:
+            return JobOutcome(existing.id, ran=False, counts=json.loads(existing.counts))
+        values = {
+            "job": job,
+            "started_at": clock(),
+            "ended_at": None,
+            "status": JobStatus.RUNNING.value,
+            "counts": "{}",
+            "error": None,
+            "application_version": application_version,
+            "configuration_hash": configuration_hash,
+        }
+        if existing is None:
+            job_run_id: int = connection.execute(
+                insert(runs).values(idempotency_key=idempotency_key, **values).returning(runs.c.id)
+            ).scalar_one()
+        else:
+            # An earlier attempt failed, or crashed while running. The same row is used again.
+            job_run_id = existing.id
+            connection.execute(update(runs).where(runs.c.id == job_run_id).values(**values))
     try:
+        if prepare is not None:
+            prepare(job_run_id)
         with engine.begin() as connection:
-            existing = connection.execute(
-                select(runs.c.id, runs.c.status, runs.c.counts).where(
-                    runs.c.idempotency_key == idempotency_key
-                )
-            ).one_or_none()
-            if existing is not None and existing.status == JobStatus.SUCCEEDED.value:
-                return JobOutcome(existing.id, ran=False, counts=json.loads(existing.counts))
-            values = {
-                "job": job,
-                "started_at": started,
-                "ended_at": None,
-                "status": JobStatus.RUNNING.value,
-                "counts": "{}",
-                "error": None,
-                "application_version": application_version,
-                "configuration_hash": configuration_hash,
-            }
-            if existing is None:
-                job_run_id = connection.execute(
-                    insert(runs)
-                    .values(idempotency_key=idempotency_key, **values)
-                    .returning(runs.c.id)
-                ).scalar_one()
-            else:
-                # An earlier attempt failed. The same row is used again.
-                job_run_id = existing.id
-                connection.execute(update(runs).where(runs.c.id == job_run_id).values(**values))
             counts = dict(work(connection, job_run_id) or {})
             connection.execute(
                 update(runs)
@@ -92,48 +104,16 @@ def run_job(
                     counts=json.dumps(counts, sort_keys=True),
                 )
             )
-            return JobOutcome(job_run_id, ran=True, counts=counts)
     except Exception as error:
-        _record_failure(
-            engine,
-            job=job,
-            idempotency_key=idempotency_key,
-            application_version=application_version,
-            configuration_hash=configuration_hash,
-            started=started,
-            ended=clock(),
-            error=f"{type(error).__name__}: {error}"[:500],
-        )
+        with engine.begin() as connection:
+            connection.execute(
+                update(runs)
+                .where(runs.c.id == job_run_id)
+                .values(
+                    status=JobStatus.FAILED.value,
+                    ended_at=clock(),
+                    error=f"{type(error).__name__}: {error}"[:500],
+                )
+            )
         raise
-
-
-def _record_failure(
-    engine: Engine,
-    *,
-    job: str,
-    idempotency_key: str,
-    application_version: str,
-    configuration_hash: str,
-    started: datetime,
-    ended: datetime,
-    error: str,
-) -> None:
-    runs = schema.job_runs
-    values = {
-        "job": job,
-        "started_at": started,
-        "ended_at": ended,
-        "status": JobStatus.FAILED.value,
-        "counts": "{}",
-        "error": error,
-        "application_version": application_version,
-        "configuration_hash": configuration_hash,
-    }
-    with engine.begin() as connection:
-        existing = connection.execute(
-            select(runs.c.id, runs.c.status).where(runs.c.idempotency_key == idempotency_key)
-        ).one_or_none()
-        if existing is None:
-            connection.execute(insert(runs).values(idempotency_key=idempotency_key, **values))
-        elif existing.status != JobStatus.SUCCEEDED.value:
-            connection.execute(update(runs).where(runs.c.id == existing.id).values(**values))
+    return JobOutcome(job_run_id, ran=True, counts=counts)

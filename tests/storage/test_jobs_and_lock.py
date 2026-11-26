@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Mapping
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -12,13 +15,13 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import JobStatus
-from ai_briefing.domain.records import JobRun, Story
+from ai_briefing.domain.records import JobRun, LLMCall, Story
 from ai_briefing.runtime import cli
 from ai_briefing.storage import repositories, schema
-from ai_briefing.storage.jobs import JobOutcome, run_job
+from ai_briefing.storage.jobs import JobOutcome, Prepare, Work, run_job
 from ai_briefing.storage.lock import LockHeld, job_lock, lock_path
 
-from .conftest import HASH, NOW
+from .conftest import HASH, NOW, model_call
 
 
 def row_counts(engine: Engine) -> dict[str, int]:
@@ -34,14 +37,20 @@ def add_a_story(connection: Connection, _job_run_id: int) -> Mapping[str, int]:
     return {"stories": 1}
 
 
-def run(engine: Engine, key: str = "collect:2026-11-19", work: object = add_a_story) -> JobOutcome:
+def run(
+    engine: Engine,
+    key: str = "collect:2026-11-19",
+    work: Work = add_a_story,
+    prepare: Prepare | None = None,
+) -> JobOutcome:
     return run_job(
         engine,
         job="collect",
         idempotency_key=key,
         application_version="0.0.0",
         configuration_hash=HASH,
-        work=work,  # type: ignore[arg-type]
+        work=work,
+        prepare=prepare,
         clock=lambda: NOW,
     )
 
@@ -130,31 +139,148 @@ def test_a_key_that_failed_can_be_run_again_and_reuses_its_record(engine: Engine
 
 
 def test_a_job_and_its_completion_are_one_transaction(engine: Engine) -> None:
-    seen: dict[str, int] = {}
+    seen: dict[str, object] = {}
 
-    def work(connection: Connection, job_run_id: int) -> Mapping[str, int]:
-        add_a_story(connection, job_run_id)
-        # Another connection cannot see the story or the run until the job commits.
-        seen.update(row_counts_uncommitted(engine))
-        return {}
-
-    def row_counts_uncommitted(other: Engine) -> dict[str, int]:
-        import sqlite3
-
-        path = other.url.database
+    def as_another_connection_sees_it() -> dict[str, object]:
+        path = engine.url.database
         assert path is not None
         raw = sqlite3.connect(path)
         try:
             return {
                 "stories": raw.execute("SELECT count(*) FROM stories").fetchone()[0],
-                "job_runs": raw.execute("SELECT count(*) FROM job_runs").fetchone()[0],
+                "runs": raw.execute("SELECT status FROM job_runs").fetchall(),
             }
         finally:
             raw.close()
 
+    def work(connection: Connection, job_run_id: int) -> Mapping[str, int]:
+        add_a_story(connection, job_run_id)
+        seen.update(as_another_connection_sees_it())
+        return {}
+
     run(engine, work=work)
-    assert seen == {"stories": 0, "job_runs": 0}
+    # While the work was under way the run was visibly "running" and the story was not
+    # there. Afterwards both the story and the success are.
+    assert seen == {"stories": 0, "runs": [("running",)]}
+    assert as_another_connection_sees_it() == {"stories": 1, "runs": [("succeeded",)]}
+
+
+def test_a_run_left_running_by_a_crash_is_taken_over(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            schema.job_runs.insert().values(
+                job="collect",
+                idempotency_key="collect:2026-11-19",
+                started_at=NOW,
+                status="running",
+                counts="{}",
+                application_version="0.0.0",
+                configuration_hash=HASH,
+            )
+        )
+    outcome = run(engine)
+    assert outcome.ran is True
+    assert row_counts(engine)["job_runs"] == 1
     assert row_counts(engine)["stories"] == 1
+
+
+# --- Model calls are paid for whatever the job does next -----------------------------------------
+
+
+def run_with_call(engine: Engine, work: Work) -> list[int]:
+    """Run a job that records one model call while preparing, then does ``work``."""
+    recorded: list[int] = []
+
+    def prepare(job_run_id: int) -> None:
+        call = repositories.record_model_call(engine, model_call(job_run_id), now=lambda: NOW)
+        assert call.id is not None
+        recorded.append(call.id)
+
+    # A failing job raises; the tests look at what was left in the database afterwards.
+    with contextlib.suppress(RuntimeError):
+        run_job(
+            engine,
+            job="process",
+            idempotency_key="process:2026-11-19",
+            application_version="0.0.0",
+            configuration_hash=HASH,
+            prepare=prepare,
+            work=work,
+            clock=lambda: NOW,
+        )
+    return recorded
+
+
+def failing_work(connection: Connection, job_run_id: int) -> Mapping[str, int]:
+    add_a_story(connection, job_run_id)
+    raise RuntimeError("the results could not be written")
+
+
+def test_a_model_call_stays_recorded_when_the_job_then_fails(engine: Engine) -> None:
+    recorded = run_with_call(engine, failing_work)
+    counts = row_counts(engine)
+    assert counts["stories"] == 0  # the job's results were rolled back
+    assert counts["llm_calls"] == 1  # the call that was paid for was not
+    with engine.connect() as connection:
+        call = repositories.get(connection, LLMCall, recorded[0])
+        job = repositories.get(connection, JobRun, 1)
+    assert call is not None
+    assert call.estimated_cost_usd == Decimal("0.00027")
+    assert job is not None
+    assert job.status is JobStatus.FAILED
+    assert call.job_run_id == job.id
+
+
+def test_a_retry_after_a_failure_records_its_own_call_and_loses_none(engine: Engine) -> None:
+    run_with_call(engine, failing_work)
+    run_with_call(engine, add_a_story)
+    counts = row_counts(engine)
+    assert counts["llm_calls"] == 2  # both attempts spent money; both are on record
+    assert counts["stories"] == 1
+    assert counts["job_runs"] == 1
+    with engine.connect() as connection:
+        spent = list(connection.execute(select(schema.llm_calls.c.estimated_cost_usd)).scalars())
+    assert sum(spent, Decimal(0)) == Decimal("0.00054")
+    # A key that has now succeeded makes no further call.
+    assert run_with_call(engine, add_a_story) == []
+    assert row_counts(engine)["llm_calls"] == 2
+
+
+def test_a_failure_while_preparing_is_recorded_and_writes_no_results(engine: Engine) -> None:
+    written: list[int] = []
+
+    def prepare(job_run_id: int) -> None:
+        repositories.record_model_call(engine, model_call(job_run_id), now=lambda: NOW)
+        raise RuntimeError("the second call failed")
+
+    def work(connection: Connection, job_run_id: int) -> Mapping[str, int]:
+        written.append(job_run_id)
+        return {}
+
+    with pytest.raises(RuntimeError, match="second call failed"):
+        run(engine, work=work, prepare=prepare)
+    assert written == []
+    assert row_counts(engine)["llm_calls"] == 1
+    with engine.connect() as connection:
+        job = repositories.get(connection, JobRun, 1)
+    assert job is not None
+    assert job.status is JobStatus.FAILED
+
+
+def test_no_transaction_is_open_while_a_job_prepares(engine: Engine) -> None:
+    # If one were, recording the call would wait on it and fail, and a slow model call
+    # would hold the database's single write lock.
+    def prepare(job_run_id: int) -> None:
+        path = engine.url.database
+        assert path is not None
+        raw = sqlite3.connect(path, timeout=0)
+        try:
+            raw.execute("BEGIN IMMEDIATE")
+            raw.execute("ROLLBACK")
+        finally:
+            raw.close()
+
+    assert run(engine, prepare=prepare).ran is True
 
 
 # --- One writer -----------------------------------------------------------------------------

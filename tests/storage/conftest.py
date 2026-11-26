@@ -133,10 +133,20 @@ def model_call(job_run_id: int) -> LLMCall:
     )
 
 
-def add_chain(connection: Connection, *, external_id: str = "post-1") -> Chain:
+def add_chain(engine: Engine, *, external_id: str = "post-1") -> Chain:
+    """Build the chain the way a job does: the run, then the model call on its own, then
+    everything else in one transaction.
+    """
+    with engine.begin() as connection:
+        source_id = add_source(connection) if external_id == "post-1" else "example-blog"
+        job_run_id = add_job_run(connection, key=f"test:setup:{external_id}")
+    call = repositories.record_model_call(engine, model_call(job_run_id), now=lambda: NOW)
+    with engine.begin() as connection:
+        return _add_rest(connection, source_id, call, external_id)
+
+
+def _add_rest(connection: Connection, source_id: str, call: LLMCall, external_id: str) -> Chain:
     add = repositories.add
-    source_id = add_source(connection) if external_id == "post-1" else "example-blog"
-    job_run_id = add_job_run(connection, key=f"test:setup:{external_id}")
     document = add(
         connection,
         SourceDocument(
@@ -175,7 +185,6 @@ def add_chain(connection: Connection, *, external_id: str = "post-1") -> Chain:
             occurred_at=NOW,
         ),
     )
-    call = add(connection, model_call(job_run_id), now=lambda: NOW)
     assert call.id is not None
     assessment = add(
         connection,
