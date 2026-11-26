@@ -12,6 +12,9 @@ What is stored for an item follows its source's mode, and nothing else is kept:
   that pass screening, through :func:`fetch_body`.
 - ``metadata_only``: metadata. Any summary or content in the feed is discarded.
 - ``disabled``: the source is never requested.
+
+A source is requested no more often than its ``polling_interval_minutes``, counted from
+its last successful fetch. A source that failed last time is tried again on the next run.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 from sqlalchemy import Engine
@@ -69,6 +72,13 @@ def stored_text(source: Source, entry: FeedEntry) -> tuple[str | None, str | Non
     return None, None
 
 
+def is_due(source: Source, last_success_at: datetime | None, now: datetime) -> bool:
+    """True when the source's polling interval has passed since it was last fetched."""
+    if last_success_at is None:
+        return True
+    return now - last_success_at >= timedelta(minutes=source.polling_interval_minutes)
+
+
 def feed_hosts(source: Source) -> frozenset[str]:
     """The hosts a source's feed may be fetched from: its own, and its article hosts."""
     hosts = {(urlsplit(source.url).hostname or "").lower()}
@@ -96,14 +106,20 @@ def collect(
     to_fetch = [s for s in wanted if s.enabled and s.kind in FEED_KINDS]
     without_adapter = [s.id for s in wanted if s.enabled and s.kind not in FEED_KINDS]
     fetched: list[_Fetched] = []
+    not_due: list[str] = []
 
     def prepare(_job_run_id: int) -> None:
         with engine.connect() as connection:
             states = {s.id: source_state.read_feed_state(connection, s.id) for s in to_fetch}
         for source in to_fetch:
+            state = states[source.id]
+            if not is_due(source, state.last_success_at, started):
+                # The catalogue's schedule decides how often a source is asked, however
+                # often collection runs.
+                not_due.append(source.id)
+                continue
             item = _Fetched(source)
             fetched.append(item)
-            state = states[source.id]
             try:
                 item.result = fetcher.fetch(
                     source.url,
@@ -127,6 +143,7 @@ def collect(
             "sources_fetched": 0,
             "sources_not_modified": 0,
             "sources_failed": 0,
+            "sources_not_due": len(not_due),
             "sources_without_adapter": len(without_adapter),
             "entries_seen": 0,
             "documents_added": 0,

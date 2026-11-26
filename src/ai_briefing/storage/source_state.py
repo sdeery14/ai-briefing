@@ -21,18 +21,24 @@ class FeedState:
     etag: str | None = None
     last_modified: str | None = None
     consecutive_failures: int = 0
+    last_success_at: datetime | None = None
 
 
 def read_feed_state(connection: Connection, source_id: str) -> FeedState:
     table = schema.sources
     row = connection.execute(
-        select(table.c.feed_etag, table.c.feed_last_modified, table.c.consecutive_failures).where(
-            table.c.id == source_id
-        )
+        select(
+            table.c.feed_etag,
+            table.c.feed_last_modified,
+            table.c.consecutive_failures,
+            table.c.last_success_at,
+        ).where(table.c.id == source_id)
     ).one_or_none()
     if row is None:
         return FeedState()
-    return FeedState(row.feed_etag, row.feed_last_modified, row.consecutive_failures)
+    return FeedState(
+        row.feed_etag, row.feed_last_modified, row.consecutive_failures, row.last_success_at
+    )
 
 
 def record_fetch_success(

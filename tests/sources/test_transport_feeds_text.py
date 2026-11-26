@@ -41,6 +41,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if self.path == "/truncated":
+            # Declares 200 bytes, sends a well-formed but shorter feed, and hangs up.
+            self.send_response(200)
+            self.send_header("Content-Length", "200")
+            self.end_headers()
+            self.wfile.write(b"<rss><channel/></rss>")
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if self.path == "/trickle":
             # A byte every 50 ms: never silent for long, and never finished.
             self.send_response(200)
@@ -125,6 +134,12 @@ def test_a_response_that_trickles_in_is_cut_off_at_the_time_limit(server: int) -
     with pytest.raises(RequestTimedOut, match=r"longer than 0\.5 seconds"):
         HttpTransport().send(hop(server, "/trickle", timeout_seconds=0.5))
     assert time.monotonic() - started < 3
+
+
+def test_a_response_that_ends_before_its_declared_length_is_an_error(server: int) -> None:
+    # Accepted as it was, the short feed would parse, and its ETag would then be saved.
+    with pytest.raises(FetchError, match="ended after 21 of the 200 bytes"):
+        HttpTransport().send(hop(server, "/truncated"))
 
 
 def test_a_request_that_finishes_in_time_is_not_cut_off(server: int) -> None:

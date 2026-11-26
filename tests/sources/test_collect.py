@@ -199,11 +199,11 @@ def test_an_edited_entry_adds_an_observation_and_keeps_the_earlier_one(engine: E
 
 
 def test_a_corrected_title_is_kept_on_the_document(engine: Engine) -> None:
-    for hour, mode_source in ((8, SUMMARY), (10, METADATA)):
+    for hour, mode_source in ((1, SUMMARY), (15, METADATA)):
         host = f"{mode_source.id}.example.org"
         first = {mode_source.url: ok(rss(host, ("x1", "Modle scores 90", TEXT)))}
         fixed = {mode_source.url: ok(rss(host, ("x1", "Model scores 90", TEXT)))}
-        early, late = NOW.replace(hour=hour), NOW.replace(hour=hour + 1)
+        early, late = NOW.replace(hour=hour), NOW.replace(hour=hour + 6)
         run(engine, FakeTransport(first), catalogue=(mode_source,), at=early)
         outcome = run(engine, FakeTransport(fixed), catalogue=(mode_source,), at=late)
         document, seen = stored(engine, mode_source.id)
@@ -284,6 +284,59 @@ def test_the_second_run_is_conditional_and_a_304_adds_nothing(engine: Engine) ->
         row = connection.execute(select(schema.sources)).mappings().one()
     assert row["feed_etag"] == '"v1"'  # a 304 keeps the validators it was made with
     assert row["consecutive_failures"] == 0
+
+
+# --- The polling interval -----------------------------------------------------------------------
+
+
+def test_a_source_is_not_requested_again_before_its_polling_interval(engine: Engine) -> None:
+    daily = source("daily", "feed_summary", polling_interval_minutes=1440)
+    six_hourly = source("sixhourly", "metadata_only", polling_interval_minutes=360)
+    replies = {
+        daily.url: ok(rss("daily.example.org", ("d1", "Daily one", TEXT))),
+        six_hourly.url: ok(rss("sixhourly.example.org", ("h1", "Six-hourly one", TEXT))),
+    }
+    catalogue = (daily, six_hourly)
+
+    def requested(at: datetime) -> tuple[set[str], int]:
+        transport = FakeTransport(replies)
+        outcome = run(engine, transport, catalogue=catalogue, at=at)
+        return {url.split("/")[2] for url in transport.urls}, outcome.counts["sources_not_due"]
+
+    start = datetime(2026, 11, 19, 0, 0, tzinfo=UTC)
+    both = {"daily.example.org", "sixhourly.example.org"}
+    assert requested(start) == (both, 0)
+    assert requested(start.replace(hour=3)) == (set(), 2)  # three hours on: neither is due
+    assert requested(start.replace(hour=5, minute=59)) == (set(), 2)
+    assert requested(start.replace(hour=6)) == ({"sixhourly.example.org"}, 1)
+    assert requested(start.replace(hour=23, minute=59)) == ({"sixhourly.example.org"}, 1)
+    # A day on, the daily one is due. The other was fetched a minute ago and is not.
+    assert requested(start.replace(day=20)) == ({"daily.example.org"}, 1)
+    assert count(engine, "source_documents") == 2
+
+
+def test_a_source_that_failed_is_tried_again_on_the_next_run(engine: Engine) -> None:
+    feed = ok(rss("summary.example.org", ("s1", "Summary one", TEXT)))
+    transport = FakeTransport({SUMMARY.url: [HopResponse(status=503), feed]})
+    fetcher = make_fetcher(transport)
+    first = run(engine, transport, catalogue=(SUMMARY,), fetcher=fetcher)
+    soon = run(engine, transport, catalogue=(SUMMARY,), at=NOW.replace(minute=20), fetcher=fetcher)
+    assert first.counts["sources_failed"] == 1
+    # Five minutes later it is asked again, because it has never succeeded.
+    assert soon.counts["sources_not_due"] == 0
+    assert soon.counts["documents_added"] == 1
+    again = run(engine, transport, catalogue=(SUMMARY,), at=NOW.replace(minute=25), fetcher=fetcher)
+    assert again.counts["sources_not_due"] == 1  # now that it has, the interval applies
+
+
+def test_the_committed_catalogue_polls_arxiv_at_most_daily() -> None:
+    from ai_briefing.sources.catalogue import load_catalogue
+
+    arxiv = next(s for s in load_catalogue() if s.id == "arxiv-cs-cl")
+    fetched = datetime(2026, 11, 19, 0, 0, tzinfo=UTC)
+    assert collecting.is_due(arxiv, None, fetched) is True
+    assert collecting.is_due(arxiv, fetched, fetched.replace(hour=23, minute=59)) is False
+    assert collecting.is_due(arxiv, fetched, fetched.replace(day=20)) is True
 
 
 # --- A failing source does not fail the run -----------------------------------------------------

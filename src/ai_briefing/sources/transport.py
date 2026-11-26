@@ -139,8 +139,9 @@ class HttpTransport:
 def _read_limited(
     response: http.client.HTTPResponse, max_bytes: int, sock: socket.socket, deadline: _Deadline
 ) -> bytes:
-    declared = response.getheader("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+    header = response.getheader("content-length")
+    declared = int(header) if header is not None and header.isdigit() else None
+    if declared is not None and declared > max_bytes:
         raise ResponseTooLarge(f"the response declares {declared} bytes; the limit is {max_bytes}")
     chunks: list[bytes] = []
     total = 0
@@ -150,6 +151,12 @@ def _read_limited(
         deadline.apply(sock)
         chunk = response.read1(min(CHUNK, max_bytes + 1 - total))
         if not chunk:
+            if declared is not None and total < declared:
+                # The connection closed early. A cut-off feed could still parse, and its
+                # cache validators would then hide the missing entries on later runs.
+                raise FetchError(
+                    f"the response ended after {total} of the {declared} bytes it declared"
+                )
             return b"".join(chunks)
         total += len(chunk)
         if total > max_bytes:
