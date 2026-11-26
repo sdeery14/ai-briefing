@@ -31,6 +31,25 @@ class FeedEntry:
     content: str | None  # plain text of the full entry, when the feed carries it
 
 
+def describe(data: bytes) -> str:
+    """What some bytes that are not a feed look like, in a few words. For a failure
+    message: enough to tell a web page from a compressed body from nothing at all,
+    without quoting the content.
+    """
+    start = data[:512].lstrip().lower()
+    if not data.strip():
+        return "is empty"
+    if data[:2] == b"\x1f\x8b":
+        return "is gzip-compressed"
+    if start.startswith((b"<!doctype html", b"<html")):
+        return "is an HTML page"
+    if start.startswith((b"<?xml", b"<rss", b"<feed", b"<rdf")):
+        return f"is XML of {len(data)} bytes with no entries that could be read"
+    if start.startswith((b"{", b"[")):
+        return "looks like JSON"
+    return f"is {len(data)} bytes of an unrecognised kind"
+
+
 def _published(entry: feedparser.FeedParserDict) -> datetime | None:
     parsed = entry.get("published_parsed")
     if parsed is None:
@@ -71,7 +90,7 @@ def parse_feed(data: bytes, *, feed_url: str) -> list[FeedEntry]:
         raise TypeError("parse_feed takes the fetched bytes")
     parsed = feedparser.parse(data, sanitize_html=False, resolve_relative_uris=False)
     if not parsed.entries and (parsed.get("bozo") or not parsed.get("version")):
-        raise FeedError("the response is not an RSS or Atom feed")
+        raise FeedError(f"the response is not an RSS or Atom feed; it {describe(data)}")
     entries: list[FeedEntry] = []
     for entry in parsed.entries:
         try:

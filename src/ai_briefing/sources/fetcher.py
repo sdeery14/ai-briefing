@@ -9,6 +9,7 @@ returns bytes.
 from __future__ import annotations
 
 import time
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin
@@ -28,6 +29,53 @@ from ai_briefing.sources.transport import HopRequest, HopResponse, ResponseTooLa
 
 REDIRECTS = frozenset({301, 302, 303, 307, 308})
 ROBOTS_MAX_BYTES = 500_000
+
+
+def decoded(body: bytes, encoding: str | None, limit: int) -> bytes:
+    """The body with its content encoding removed, never more than ``limit`` bytes.
+
+    Requests ask for an unencoded response, and some servers compress anyway. The size
+    limit applies to what comes out, so a small compressed body cannot expand into a
+    large one.
+    """
+    name = (encoding or "identity").strip().lower()
+    if name in ("", "identity"):
+        return body
+    if name in ("gzip", "x-gzip"):
+        attempts = [16 + zlib.MAX_WBITS]
+    elif name == "deflate":
+        attempts = [zlib.MAX_WBITS, -zlib.MAX_WBITS]  # with a zlib header, or without
+    else:
+        raise FetchError(f"the response uses a content encoding that is not read: {name[:30]}")
+    for wbits in attempts:
+        try:
+            return _expanded(body, wbits, limit, members=name != "deflate")
+        except zlib.error:
+            continue
+    raise FetchError(f"the response says it is {name} and could not be read as that")
+
+
+def _expanded(body: bytes, wbits: int, limit: int, *, members: bool) -> bytes:
+    """All of a compressed body, or a failure. Never part of it.
+
+    A stream that stops before its end is refused: what is missing may be the rule in
+    robots.txt that mattered, or half a feed. A gzip body may be several members one after
+    another, and every one is read; the limit is on their total.
+    """
+    out = bytearray()
+    data = body
+    while True:
+        expander = zlib.decompressobj(wbits)
+        out += expander.decompress(data, limit + 1 - len(out))
+        if len(out) > limit or expander.unconsumed_tail:
+            raise ResponseTooLarge(f"the response expands beyond the limit of {limit} bytes")
+        if not expander.eof:
+            raise FetchError("the compressed response ends before it is complete")
+        data = expander.unused_data
+        if not data:
+            return bytes(out)
+        if not members:
+            raise FetchError("the compressed response is followed by data that is not part of it")
 
 
 class TooManyRedirects(FetchError):  # noqa: N818 - reads as a statement of fact
@@ -126,7 +174,7 @@ class Fetcher:
             return FetchResult(
                 not_modified=False,
                 final_url=current,
-                body=response.body,
+                body=decoded(response.body, response.headers.get("content-encoding"), limit),
                 etag=response.headers.get("etag"),
                 last_modified=response.headers.get("last-modified"),
                 content_type=response.headers.get("content-type"),
@@ -203,5 +251,11 @@ class Fetcher:
             return rules
         if response.status != 200:
             return None  # includes a redirect: robots.txt is read from the host itself
-        rules.parse(response.body.decode("utf-8", errors="replace").splitlines())
+        try:
+            body = decoded(
+                response.body, response.headers.get("content-encoding"), ROBOTS_MAX_BYTES
+            )
+        except FetchError:
+            return None
+        rules.parse(body.decode("utf-8", errors="replace").splitlines())
         return rules
