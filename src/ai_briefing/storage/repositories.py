@@ -140,19 +140,29 @@ def add[R: Record](connection: Connection, record: R) -> R:
 
 
 def record_model_call(
-    engine: Engine, call: LLMCall, *, now: Callable[[], datetime] = utc_now
+    engine: Engine,
+    call: LLMCall,
+    *,
+    now: Callable[[], datetime] = utc_now,
+    request_payload: str | None = None,
+    response_payload: str | None = None,
 ) -> LLMCall:
     """Record a model call durably, at once, and return it with its id.
 
     This opens and commits its own transaction. Call it from a job's ``prepare`` step,
     where no transaction is open: SQLite has one writer, so calling it while the job's
     write transaction is open would wait for that transaction and then fail.
+
+    The request payload holds source text, so the retention purge nulls it later
+    (ADR-010). The response is the system's own and is kept.
     """
     if call.id is not None:
         raise ValueError("this LLMCall already has an id; history is not rewritten")
     table = schema.llm_calls
     values = _columns(call)
     values["created_at"] = now()
+    values["request_payload"] = request_payload
+    values["response_payload"] = response_payload
     with engine.begin() as connection:
         new_id = connection.execute(
             insert(table).values(**values).returning(table.c.id)

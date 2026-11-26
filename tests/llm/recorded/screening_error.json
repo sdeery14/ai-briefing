@@ -1,0 +1,31 @@
+{
+  "_note": "Synthetic. Written by hand for tests; no model produced it.",
+  "request": {
+    "model": "claude-haiku-5-5",
+    "system": "You screen synthetic items for a test. Answer in the given shape.",
+    "user": "Item 5: a synthetic item for which the provider fails.",
+    "output_schema": {
+      "additionalProperties": false,
+      "description": "The shape these tests ask the model for.",
+      "properties": {
+        "relevant": {
+          "title": "Relevant",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "relevant",
+        "reason"
+      ],
+      "title": "Verdict",
+      "type": "object"
+    },
+    "max_tokens": 200,
+    "effort": "low"
+  },
+  "error_class": "RateLimitError"
+}
