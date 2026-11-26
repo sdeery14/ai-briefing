@@ -35,6 +35,7 @@ from ai_briefing.runtime import cli
 from ai_briefing.storage import database, repositories, schema
 
 from .conftest import (
+    CATALOGUE,
     HASH,
     MODEL_ID,
     NOW,
@@ -55,7 +56,12 @@ VALIDATOR = contract_validator(load_schema("daily_briefing.v1"))
 def briefing(engine: Engine, *, now: datetime = NOW) -> tuple[dict[str, Any], bool]:
     with engine.begin() as connection:
         composed = compose(
-            connection, local_date=LOCAL_DATE, timezone="UTC", configuration_hash=HASH, now=now
+            connection,
+            CATALOGUE,
+            local_date=LOCAL_DATE,
+            timezone="UTC",
+            configuration_hash=HASH,
+            now=now,
         )
     return composed.briefing.document(), composed.created
 
@@ -706,3 +712,46 @@ def test_the_input_hash_is_of_the_packet_the_model_was_sent(
     stored = {row["input_hash"] for row in table(engine, "editorial_assessments")}
     assert stored <= sent
     assert len(stored) == 7
+
+
+def retitle(engine: Engine, old: str, new: str) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            schema.source_documents.update()
+            .where(schema.source_documents.c.title == old)
+            .values(title=new)
+        )
+
+
+def test_a_headline_changed_and_changed_back_shows_the_assessment_of_what_it_says_now(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    original = "An item known only by its headline"
+    changed = "An item whose release was postponed"
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    retitle(engine, original, changed)
+    run_day(engine, config, ScriptedBackend(), FakeTransport(), day="2026-11-20")
+    watch = [w["headline"] for w in briefing(engine)[0]["watchlist"]]
+    assert changed in watch
+    assert original not in watch
+    # The source goes back to its first headline. No new model call is needed: the
+    # assessment of that headline exists already, and it is the one shown again.
+    retitle(engine, changed, original)
+    third = ScriptedBackend()
+    run_day(engine, config, third, FakeTransport(), day="2026-11-21")
+    assert not [r for r in third.requests if original in r.user and "observations" in r.user]
+    watch = [w["headline"] for w in briefing(engine)[0]["watchlist"]]
+    assert original in watch
+    assert changed not in watch  # the superseded assessment is history, not the story
+
+
+def test_a_story_whose_current_input_is_not_yet_assessed_is_left_out(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    retitle(engine, "A sound paper on retrieval", "A corrected title for the retrieval paper")
+    # Composed before the story has been assessed again: its old assessment describes a
+    # headline the source no longer uses, so it is not shown.
+    content, _ = briefing(engine)
+    assert "retrieval" not in json.dumps(content["stories"]).lower()
+    assert len(content["stories"]) == 2

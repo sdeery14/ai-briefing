@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -33,7 +34,8 @@ from ai_briefing.domain.enums import (
     EditorialClass,
     LLMCallStatus,
 )
-from ai_briefing.domain.records import Briefing, BriefingItem
+from ai_briefing.domain.records import Briefing, BriefingItem, Source
+from ai_briefing.editorial.process import current_input_hash
 from ai_briefing.storage import queries, repositories, schema
 
 SCHEMA_VERSION = "daily_briefing.v1"
@@ -244,6 +246,7 @@ def latest_briefing(
 
 def compose(
     connection: Connection,
+    catalogue: Sequence[Source],
     *,
     local_date: date,
     timezone: str,
@@ -255,7 +258,12 @@ def compose(
     """
     start, end = day_bounds(local_date, timezone)
     # Stories first seen in the freshness window that ends with the day.
-    assessed = queries.assessed_stories(connection, end - FRESHNESS)
+    sources = {source.id: source for source in catalogue}
+    assessed = queries.assessed_stories(
+        connection,
+        end - FRESHNESS,
+        lambda item: current_input_hash(connection, sources, item),
+    )
     assessed = [item for item in assessed if item.story.first_seen_at < end]
     reasons = [BUDGET_REASON] if _budget_refusals(connection, start, end) else []
     previous = latest_briefing(connection, local_date, BriefingVariant.PIPELINE)

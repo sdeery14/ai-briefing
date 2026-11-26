@@ -146,6 +146,23 @@ def input_hash(packet: str) -> str:
     return hashlib.sha256(packet.encode("utf-8")).hexdigest()
 
 
+def current_input_hash(
+    connection: Connection, sources: Mapping[str, Source], item: queries.StoryInput
+) -> str | None:
+    """The input hash a story would be assessed with now, or ``None`` if it cannot be.
+
+    Assessment and briefing selection both use this, so a briefing shows the assessment
+    of what the source says today.
+    """
+    source = sources.get(item.document.source_id)
+    if source is None or not source.enabled or source.model_submission is ModelSubmission.NONE:
+        return None
+    observation = best_observation(connection, source, item.document)
+    if observation is None or observation.id is None:
+        return None
+    return input_hash(assessment_packet(source, item.document, observation))
+
+
 # --- Stage 1: screen ----------------------------------------------------------------------------
 
 

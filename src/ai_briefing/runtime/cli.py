@@ -268,12 +268,14 @@ def _briefing_generate(
 ) -> int:
     from ai_briefing.briefings.compose import BriefingError, compose
     from ai_briefing.briefings.render import to_markdown
+    from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
     from ai_briefing.storage import database as storage
     from ai_briefing.storage.lock import LockHeld, job_lock
 
     path = storage.database_path(database)
     try:
         day, timezone = _day(date_text, timezone_text)
+        catalogue = load_catalogue()
         if not path.is_file():
             raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
         with job_lock(path):
@@ -282,6 +284,7 @@ def _briefing_generate(
                 with engine.begin() as connection:
                     composed = compose(
                         connection,
+                        catalogue,
                         local_date=day,
                         timezone=timezone,
                         configuration_hash=_configuration_hash(),
@@ -289,7 +292,14 @@ def _briefing_generate(
                     )
             finally:
                 engine.dispose()
-    except (BriefingError, LockHeld, storage.StorageError, ValueError, OSError) as error:
+    except (
+        BriefingError,
+        CatalogueError,
+        LockHeld,
+        storage.StorageError,
+        ValueError,
+        OSError,
+    ) as error:
         return _fail(error)
     content = composed.briefing.document()
     if output == "json":

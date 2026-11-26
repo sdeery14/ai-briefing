@@ -7,6 +7,7 @@ work finds nothing here the next time, which is what makes running it twice add 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -145,9 +146,18 @@ class Assessed:
     evidence: tuple[EvidenceItem, ...]
 
 
-def assessed_stories(connection: Connection, first_seen_from: datetime) -> list[Assessed]:
-    """Each open story first seen since ``first_seen_from``, with its newest assessment and
-    that assessment's newest decision. Stories with no decision are left out.
+def assessed_stories(
+    connection: Connection,
+    first_seen_from: datetime,
+    current_input: Callable[[StoryInput], str | None],
+) -> list[Assessed]:
+    """Each open story first seen since ``first_seen_from``, with the assessment of its
+    *current* input and that assessment's newest decision.
+
+    ``current_input`` gives the input hash a story would be assessed with now. Only an
+    assessment made from exactly that input is used: an assessment of a headline or text
+    the source has since changed is history, not the story's standing. A story with no
+    assessment of its current input, or no decision, is left out.
     """
     found: list[Assessed] = []
     assessments = schema.editorial_assessments
@@ -156,10 +166,16 @@ def assessed_stories(connection: Connection, first_seen_from: datetime) -> list[
     for item in open_stories(connection):
         if item.story.first_seen_at < first_seen_from or item.story.id is None:
             continue
+        wanted = current_input(item)
+        if wanted is None:
+            continue
         assessment_row = (
             connection.execute(
                 select(assessments.c.id)
-                .where(assessments.c.story_id == item.story.id)
+                .where(
+                    assessments.c.story_id == item.story.id,
+                    assessments.c.input_hash == wanted,
+                )
                 .order_by(assessments.c.id.desc())
             )
         ).first()
