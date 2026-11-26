@@ -20,6 +20,7 @@ dependencies = [
   "alembic>=1.13",    # migrations, in batch mode for SQLite
   "pyyaml>=6.0",      # reads config/*.yaml
   "anthropic>=1.0",   # the one model provider (ADR-009, M1 issue 1.5)
+  "feedparser>=6.0",  # RSS and Atom (M1 issue 1.4)
 ]
 
 [project.scripts]
@@ -99,6 +100,11 @@ strict = true
 warn_unreachable = true
 pretty = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+# feedparser ships no type information.
+module = ["feedparser", "feedparser.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # Tests
