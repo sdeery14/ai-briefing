@@ -1,0 +1,41 @@
+{
+  "_note": "Synthetic. Written by hand for tests; no model produced it.",
+  "request": {
+    "model": "claude-haiku-5-5",
+    "system": "You screen synthetic items for a test. Answer in the given shape.",
+    "user": "Item 7: a synthetic item with part of its prompt cached.",
+    "output_schema": {
+      "additionalProperties": false,
+      "description": "The shape these tests ask the model for.",
+      "properties": {
+        "relevant": {
+          "title": "Relevant",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "relevant",
+        "reason"
+      ],
+      "title": "Verdict",
+      "type": "object"
+    },
+    "max_tokens": 200,
+    "effort": "low"
+  },
+  "response": {
+    "text": "{\"relevant\": true, \"reason\": \"Relevant.\"}",
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 2000,
+      "output_tokens": 100,
+      "cache_read_input_tokens": 50000,
+      "cache_creation_input_tokens": 10000
+    },
+    "refusal_explanation": null
+  }
+}
