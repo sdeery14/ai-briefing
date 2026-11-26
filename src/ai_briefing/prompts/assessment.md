@@ -36,10 +36,14 @@ Score each dimension from 0 to 4. Do not combine them.
 
 ## Suggested class
 
-- `major`: a development most of the audience should know about today, well supported.
-- `practical`: useful and usable now for a good part of the audience.
-- `watch`: possibly important, but early, unconfirmed or thinly supported.
+The class says how much the reader should care today. Choose it from what the material reports, not from the kind of document it is.
+
+- `major`: a development most of the audience should know about today, with strong support.
+- `practical`: useful to a good part of the audience now. The material reports concrete results and gives the reader something to use or check: released code, data or a model, or a method described well enough to apply.
+- `watch`: possibly important, but its usefulness cannot yet be judged from the material: no results, results with no method, or nothing the reader can use yet.
 - `low`: not worth the reader's attention today.
+
+A preprint, or any other work that has not been reviewed, can be `practical`. Being unreviewed is not by itself a reason for `watch`: say it in `uncertainty`, and let the `evidence` and `maturity` scores carry it. Do not count it again in the class.
 
 This is a suggestion. The final class is decided elsewhere, from facts about the evidence.
 
