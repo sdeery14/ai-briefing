@@ -23,6 +23,8 @@ from typing import Protocol
 from ai_briefing.sources.network import FetchError
 
 CHUNK = 65536
+# Statuses whose responses never carry a body (RFC 9110).
+BODYLESS = frozenset({204, 304})
 
 
 class ResponseTooLarge(FetchError):  # noqa: N818 - reads as a statement of fact
@@ -139,6 +141,10 @@ class HttpTransport:
 def _read_limited(
     response: http.client.HTTPResponse, max_bytes: int, sock: socket.socket, deadline: _Deadline
 ) -> bytes:
+    if response.status in BODYLESS or 100 <= response.status < 200:
+        # These responses have no body. A Content-Length on a 304 describes the page that
+        # was not sent, so it is neither a size to refuse nor a length to wait for.
+        return b""
     header = response.getheader("content-length")
     declared = int(header) if header is not None and header.isdigit() else None
     if declared is not None and declared > max_bytes:

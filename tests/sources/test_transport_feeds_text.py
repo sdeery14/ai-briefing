@@ -41,6 +41,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if self.path in ("/not-modified", "/not-modified-huge", "/no-content"):
+            # A 304 may state the length of the page it is not sending. It has no body.
+            self.send_response(204 if self.path == "/no-content" else 304)
+            self.send_header("ETag", '"v1"')
+            length = "9000000" if self.path == "/not-modified-huge" else "100"
+            self.send_header("Content-Length", length)
+            self.end_headers()
+            return
         if self.path == "/truncated":
             # Declares 200 bytes, sends a well-formed but shorter feed, and hangs up.
             self.send_response(200)
@@ -140,6 +148,21 @@ def test_a_response_that_ends_before_its_declared_length_is_an_error(server: int
     # Accepted as it was, the short feed would parse, and its ETag would then be saved.
     with pytest.raises(FetchError, match="ended after 21 of the 200 bytes"):
         HttpTransport().send(hop(server, "/truncated"))
+
+
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [("/not-modified", 304), ("/not-modified-huge", 304), ("/no-content", 204)],
+)
+def test_a_response_with_no_body_is_not_held_to_a_declared_length(
+    server: int, path: str, status: int
+) -> None:
+    # Neither "truncated" (nothing arrives) nor "too large" (the length is of a page that
+    # was not sent, even when it is over the limit).
+    response = HttpTransport().send(hop(server, path))
+    assert response.status == status
+    assert response.body == b""
+    assert response.headers["etag"] == '"v1"'
 
 
 def test_a_request_that_finishes_in_time_is_not_cut_off(server: int) -> None:
