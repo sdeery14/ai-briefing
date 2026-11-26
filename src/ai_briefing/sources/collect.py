@@ -95,9 +95,14 @@ def collect(
     application_version: str,
     configuration_hash: str,
     only: str | None = None,
+    idempotency_key: str | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> JobOutcome:
-    """Fetch every enabled feed source and store what is new. Returns the job's outcome."""
+    """Fetch every enabled feed source and store what is new. Returns the job's outcome.
+
+    With no ``idempotency_key`` each call is its own run. The daily run passes the day,
+    so collecting twice for one day does nothing the second time.
+    """
     started = clock()
     wanted = [s for s in catalogue if only is None or s.id == only]
     if only is not None and not wanted:
@@ -178,7 +183,7 @@ def collect(
     return run_job(
         engine,
         job="collect",
-        idempotency_key=f"collect:{only or 'all'}:{started.isoformat()}",
+        idempotency_key=idempotency_key or f"collect:{only or 'all'}:{started.isoformat()}",
         application_version=application_version,
         configuration_hash=configuration_hash,
         prepare=prepare,
