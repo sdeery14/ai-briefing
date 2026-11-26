@@ -139,6 +139,27 @@ def best_observation(
     )
 
 
+def in_turn[T](
+    items: Sequence[T],
+    *,
+    source_of: Callable[[T], str],
+    rank: Callable[[T], tuple[float, ...]],
+) -> list[T]:
+    """Items ordered so that each source takes a turn: every source's best item, then
+    every source's second best, and so on. Within a turn, the better-ranked item is first.
+    """
+    by_source: dict[str, list[T]] = {}
+    for item in sorted(items, key=rank):
+        by_source.setdefault(source_of(item), []).append(item)
+    ordered: list[T] = []
+    turn = 0
+    while len(ordered) < len(items):
+        taking = [queue[turn] for queue in by_source.values() if turn < len(queue)]
+        ordered.extend(sorted(taking, key=rank))
+        turn += 1
+    return ordered
+
+
 def input_hash(packet: str) -> str:
     """A hash of exactly what an assessment was given: the whole packet sent to the model.
 
@@ -402,15 +423,18 @@ def assess(
                     continue
                 pending.append((item.story.id, source, item.document, observation, packet, digest))
             relevance = queries.screening_relevance(connection)
-        # The most relevant first, then the newest. A run assesses a limited number, so
-        # the order decides what a busy day's briefing is made from: not whichever source
-        # happened to be collected first.
-        pending.sort(
-            key=lambda entry: (
+        # A run assesses a limited number, so the order decides what the day's briefing
+        # is made from. Within a source: the most relevant first, then the newest. Across
+        # sources: each in turn, so one source that publishes hundreds of items a day
+        # cannot use up the run before the others are reached.
+        pending = in_turn(
+            pending,
+            source_of=lambda entry: entry[1].id,
+            rank=lambda entry: (
                 -relevance.get(entry[2].id or 0, 0),
                 -entry[2].fresh_at.timestamp(),
                 entry[0],
-            )
+            ),
         )
         for story_id, source, document, observation, packet, digest in pending[
             :MAX_ASSESSED_PER_RUN
