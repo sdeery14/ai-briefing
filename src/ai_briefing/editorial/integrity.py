@@ -3,8 +3,8 @@
 This checks three things about a citation, exactly and in code:
 
 - the observation it cites was one the model was given;
-- the quoted words occur in that observation's stored text, after whitespace and Unicode
-  normalisation and nothing else;
+- the quoted words occur in the text of that observation that was sent to the model,
+  after whitespace and Unicode normalisation and nothing else;
 - the observation was made before the assessment.
 
 Passing shows that the source contains those words. It does not show that the claim is
@@ -15,6 +15,7 @@ verified quotation as a verified claim.
 from __future__ import annotations
 
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 
 from ai_briefing.domain.records import DocumentObservation
@@ -28,29 +29,34 @@ def normalise(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).split())
 
 
-def shown_text(observation: DocumentObservation) -> str | None:
-    """The text of an observation that a quotation can be checked against."""
-    return observation.body_text or observation.summary
-
-
-def quote_is_in(quote: str, observation: DocumentObservation) -> bool:
-    text = shown_text(observation)
+def quote_is_in(quote: str, text: str | None) -> bool:
+    """True when the quoted words occur in ``text``, after normalisation."""
     wanted = normalise(quote)
     if text is None or len(wanted) < MIN_QUOTE_CHARS:
         return False
     return wanted in normalise(text)
 
 
+@dataclass(frozen=True)
+class Shown:
+    """One observation as the model was given it.
+
+    ``text`` is exactly what was sent, which can be less than what is stored: a long
+    article is cut before it is sent. A quotation is checked against this, never against
+    the stored text, so words the model did not see cannot count as evidence.
+    """
+
+    observation: DocumentObservation
+    text: str | None
+
+
 def citation_holds(
-    quote: str,
-    observation_id: int,
-    shown: dict[int, DocumentObservation],
-    as_of: datetime,
+    quote: str, observation_id: int, shown: dict[int, Shown], as_of: datetime
 ) -> bool:
     """True when a citation passes all three checks."""
-    observation = shown.get(observation_id)
-    if observation is None:
+    given = shown.get(observation_id)
+    if given is None:
         return False
-    if observation.retrieved_at > as_of:
+    if given.observation.retrieved_at > as_of:
         return False
-    return quote_is_in(quote, observation)
+    return quote_is_in(quote, given.text)

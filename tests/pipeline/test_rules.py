@@ -74,7 +74,7 @@ def observed(
     ],
 )
 def test_words_that_are_in_the_text_pass(quote: str) -> None:
-    assert integrity.quote_is_in(quote, observed()) is True
+    assert integrity.quote_is_in(quote, TEXT) is True
 
 
 @pytest.mark.parametrize(
@@ -91,42 +91,45 @@ def test_words_that_are_in_the_text_pass(quote: str) -> None:
     ],
 )
 def test_words_that_are_not_in_the_text_fail(quote: str) -> None:
-    assert integrity.quote_is_in(quote, observed()) is False
+    assert integrity.quote_is_in(quote, TEXT) is False
 
 
 def test_compatibility_forms_are_normalised_and_nothing_else_is() -> None:
-    ligature = observed("The ﬁnal score was 90 percent overall.")
+    ligature = "The " + chr(0xFB01) + "nal score was 90 percent overall."
     assert integrity.quote_is_in("The final score was 90 percent", ligature) is True
     assert integrity.normalise(" a\t\n b  ") == "a b"
     # A curly quote and a straight one are different characters and stay different.
-    assert (
-        integrity.quote_is_in('said "it works" yesterday', observed("said “it works” yesterday"))
-        is False
-    )
+    curly = "said " + chr(0x201C) + "it works" + chr(0x201D) + " yesterday"
+    assert integrity.quote_is_in('said "it works" yesterday', curly) is False
 
 
-def test_an_observation_with_no_text_verifies_nothing() -> None:
-    assert integrity.quote_is_in("The model scores 90 percent", observed(None)) is False
-    assert (
-        integrity.shown_text(observed(None, summary="A summary of the paper."))
-        == "A summary of the paper."
-    )
-    assert (
-        integrity.quote_is_in(
-            "A summary of the paper.", observed(None, summary="A summary of the paper.")
-        )
-        is True
-    )
+def test_no_text_verifies_nothing() -> None:
+    assert integrity.quote_is_in("The model scores 90 percent", None) is False
+    assert integrity.quote_is_in("The model scores 90 percent", "") is False
+
+
+def shown(text: str | None = TEXT, *, at: datetime = NOW) -> dict[int, integrity.Shown]:
+    return {7: integrity.Shown(observed(at=at), text)}
 
 
 def test_a_citation_needs_a_given_observation_made_before_the_assessment() -> None:
     quote = "The model scores 90 percent on the benchmark."
-    shown = {7: observed()}
-    assert integrity.citation_holds(quote, 7, shown, NOW) is True
-    assert integrity.citation_holds(quote, 8, shown, NOW) is False  # not one it was given
-    later = {7: observed(at=NOW + timedelta(seconds=1))}
+    assert integrity.citation_holds(quote, 7, shown(), NOW) is True
+    assert integrity.citation_holds(quote, 8, shown(), NOW) is False  # not one it was given
+    later = shown(at=NOW + timedelta(seconds=1))
     assert integrity.citation_holds(quote, 7, later, NOW) is False  # observed after the fact
-    assert integrity.citation_holds("words that are not there at all", 7, shown, NOW) is False
+    assert integrity.citation_holds("words that are not there at all", 7, shown(), NOW) is False
+
+
+def test_a_quotation_is_checked_against_what_was_sent_not_what_is_stored() -> None:
+    # The stored observation holds both sentences. Only the first was sent to the model.
+    sent = "The model scores 90 percent on the benchmark."
+    given = {7: integrity.Shown(observed(), sent)}
+    assert integrity.citation_holds("The model scores 90 percent", 7, given, NOW) is True
+    # These words are in the stored text, but the model never saw them.
+    assert integrity.quote_is_in("It was trained for three days.", TEXT) is True
+    assert integrity.citation_holds("It was trained for three days.", 7, given, NOW) is False
+    assert integrity.citation_holds("The model scores 90 percent", 7, shown(None), NOW) is False
 
 
 # --- The policy ---------------------------------------------------------------------------------

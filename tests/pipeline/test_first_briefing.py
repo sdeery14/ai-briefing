@@ -619,3 +619,90 @@ def test_only_evidence_that_passed_the_check_counts(
     assert len([e for e in evidence if e["integrity_status"] == "failed"]) == 3
     with engine.connect() as connection:
         database.settings(connection)  # the connection is the configured one
+
+
+# --- What the model was actually given ----------------------------------------------------------
+
+
+def test_a_quote_from_beyond_the_part_of_an_article_that_was_sent_is_not_verified(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    from ai_briefing.editorial import process as processing
+
+    # A long article. The sentence the model will "quote" is real and is stored, but it
+    # lies past the point where the text sent to the model was cut off.
+    filler = "This sentence pads the article with ordinary words. " * 1_000
+    tail = "Independent benchmarks confirm it is the fastest library."
+    assert len(filler) > processing.MAX_TEXT_CHARS
+    page = (
+        "<html><body><article><p>Today we are releasing version 2 of our library.</p>"
+        f"<p>{filler}</p><p>{tail}</p></article></body></html>"
+    ).encode()
+    transport = FakeTransport({"https://vendor.example.org/v-release": page})
+    backend = ScriptedBackend()
+    run_day(engine, config, backend, transport)
+    vendor = by_title(engine)["Library version 2 released"]
+    with engine.connect() as connection:
+        stored = repositories.get(
+            connection, DocumentObservation, vendor["evidence"][0]["observation_id"]
+        )
+    assert stored is not None
+    assert stored.body_text is not None
+    assert tail in stored.body_text  # the words are in the stored article
+    sent = next(
+        json.loads(request.user)["observations"][0]["text"]
+        for request in backend.requests
+        if "version 2 released" in request.user and "observations" in request.user
+    )
+    assert len(sent) == processing.MAX_TEXT_CHARS
+    assert tail not in sent  # and were never sent to the model
+    statuses = {e["quote"]: e["integrity_status"] for e in vendor["evidence"]}
+    assert statuses == {
+        "Today we are releasing version 2 of our library.": "verified",
+        tail: "failed",
+    }
+
+
+def test_a_corrected_headline_is_assessed_again(engine: Engine, config: ModelsConfig) -> None:
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    first = by_title(engine)["An item known only by its headline"]["assessment"]
+    # The source corrects its headline. For a metadata-only source that is the whole input.
+    with engine.begin() as connection:
+        connection.execute(
+            schema.source_documents.update()
+            .where(schema.source_documents.c.title == "An item known only by its headline")
+            .values(title="An item whose release was postponed")
+        )
+    again = ScriptedBackend()
+    counts = run_day(engine, config, again, FakeTransport(), day="2026-11-20")
+    assessed = [r for r in again.requests if "observations" in r.user]
+    assert any("An item whose release was postponed" in r.user for r in assessed)
+    assert counts["assess"]["assessed"] == 1
+    assessments = [
+        row
+        for row in table(engine, "editorial_assessments")
+        if row["story_id"] == first["story_id"]
+    ]
+    assert len(assessments) == 2  # the earlier assessment is kept; a new one is added
+    assert assessments[0]["input_hash"] != assessments[1]["input_hash"]
+    assert (
+        json.loads(assessments[1]["draft_text"])["headline"]
+        == "An item whose release was postponed"
+    )
+
+
+def test_the_input_hash_is_of_the_packet_the_model_was_sent(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    import hashlib
+
+    backend = ScriptedBackend()
+    run_day(engine, config, backend, FakeTransport())
+    sent = {
+        hashlib.sha256(request.user.encode("utf-8")).hexdigest()
+        for request in backend.requests
+        if "observations" in request.user
+    }
+    stored = {row["input_hash"] for row in table(engine, "editorial_assessments")}
+    assert stored <= sent
+    assert len(stored) == 7

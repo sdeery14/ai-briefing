@@ -105,6 +105,21 @@ def assessment_text(source: Source, observation: DocumentObservation) -> str | N
     return None
 
 
+def assessment_packet(
+    source: Source, document: SourceDocument, observation: DocumentObservation
+) -> str:
+    """The message sent to the model for one story: its observations, as permitted."""
+    shown = {
+        "observation_id": observation.id,
+        "source_name": source.name,
+        "source_role": document.source_role.value,
+        "title": document.title,
+        "published": document.published_at.isoformat() if document.published_at else None,
+        "text": assessment_text(source, observation),
+    }
+    return json.dumps({"observations": [shown]}, ensure_ascii=False, sort_keys=True)
+
+
 def best_observation(
     connection: Connection, source: Source, document: SourceDocument
 ) -> DocumentObservation | None:
@@ -121,10 +136,14 @@ def best_observation(
     )
 
 
-def input_hash(observations: Sequence[DocumentObservation]) -> str:
-    """A hash of exactly which observations, with which content, an assessment was given."""
-    parts = sorted((o.id or 0, o.content_hash) for o in observations)
-    return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()
+def input_hash(packet: str) -> str:
+    """A hash of exactly what an assessment was given: the whole packet sent to the model.
+
+    The packet holds the observation ids, the title and the permitted text. So a corrected
+    headline, a changed summary or newly fetched article text each make a new input, and
+    the story is assessed again; an unchanged packet is never assessed twice.
+    """
+    return hashlib.sha256(packet.encode("utf-8")).hexdigest()
 
 
 # --- Stage 1: screen ----------------------------------------------------------------------------
@@ -338,7 +357,7 @@ def assess(
 
     def prepare(job_run_id: int) -> None:
         with engine.connect() as connection:
-            pending: list[tuple[int, Source, SourceDocument, DocumentObservation, str]] = []
+            pending: list[tuple[int, Source, SourceDocument, DocumentObservation, str, str]] = []
             for item in queries.open_stories(connection):
                 source = sources.get(item.document.source_id)
                 if source is None or item.story.id is None:
@@ -348,29 +367,24 @@ def assess(
                 observation = best_observation(connection, source, item.document)
                 if observation is None or observation.id is None:
                     continue
-                digest = input_hash([observation])
+                packet = assessment_packet(source, item.document, observation)
+                digest = input_hash(packet)
                 if queries.assessment_exists(
                     connection, item.story.id, digest, prompt.sha256, model_id
                 ):
                     continue
-                pending.append((item.story.id, source, item.document, observation, digest))
-        for story_id, source, document, observation, digest in pending[:MAX_ASSESSED_PER_RUN]:
+                pending.append((item.story.id, source, item.document, observation, packet, digest))
+        for story_id, source, document, observation, packet, digest in pending[
+            :MAX_ASSESSED_PER_RUN
+        ]:
             text = assessment_text(source, observation)
-            shown = {
-                "observation_id": observation.id,
-                "source_name": source.name,
-                "source_role": document.source_role.value,
-                "title": document.title,
-                "published": document.published_at.isoformat() if document.published_at else None,
-                "text": text,
-            }
             as_of = clock()
             result = client.call(
                 task=ModelTask.ASSESSMENT,
                 job_run_id=job_run_id,
                 prompt_id=prompt.id,
                 system=prompt.text,
-                user=json.dumps({"observations": [shown]}, ensure_ascii=False, sort_keys=True),
+                user=packet,
                 output_type=AssessmentOutput,
                 max_output_tokens=ASSESSMENT_MAX_OUTPUT_TOKENS,
             )
@@ -384,7 +398,8 @@ def assess(
                 if result.status is LLMCallStatus.BUDGET_REFUSED:
                     break
                 continue
-            given = {observation.id: observation}
+            # What the model was given, as it was given: the text is the sent text.
+            given = {observation.id: integrity.Shown(observation, text)}
             citations = [c for claim in result.output.claims for c in claim.evidence]
             if any(c.observation_id not in given for c in citations):
                 # A citation to something the model was never shown. The whole assessment
