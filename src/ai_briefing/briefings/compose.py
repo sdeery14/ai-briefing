@@ -256,11 +256,14 @@ def compose(
     from the latest. The caller's transaction holds all of it.
     """
     start, end = day_bounds(local_date, timezone)
-    # Stories whose document was published in the freshness window that ends with the day.
+    # The same clock as processing: an item is news for FRESHNESS after it was published,
+    # counted back from now. So anything processing just paid to assess is still fresh
+    # here. A briefing composed for an earlier day counts back from that day's end.
+    reference = min(now, end)
     sources = {source.id: source for source in catalogue}
     assessed = queries.assessed_stories(
         connection,
-        end - FRESHNESS,
+        reference - FRESHNESS,
         lambda item: current_input_hash(connection, sources, item),
     )
     assessed = [item for item in assessed if item.document.fresh_at < end]
