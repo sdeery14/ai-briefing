@@ -241,6 +241,12 @@ class SourceDocument(Record):
     first_seen_at: UtcDatetime
     source_role: SourceRole
 
+    @property
+    def fresh_at(self) -> datetime:
+        """The time freshness is counted from: when the source says it was published, or,
+        when the source gives no time, when it was first seen (RFC §6.3)."""
+        return self.published_at or self.first_seen_at
+
 
 class DocumentObservation(Record):
     """What was seen when a document was fetched. Append-only; the hash survives a purge."""

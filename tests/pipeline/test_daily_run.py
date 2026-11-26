@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -354,6 +354,8 @@ def cli_day(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("AI_BRIEFING_TIMEZONE", raising=False)
     monkeypatch.setattr(cli, "make_fetcher", lambda: make_fetcher(FakeTransport()))
+    # The synthetic feeds are dated; the commands run as if it were that day.
+    monkeypatch.setattr(cli, "current_time", lambda: NOW)
     return ["--database", str(tmp_path / "data" / "briefing.sqlite3")]
 
 
@@ -531,7 +533,7 @@ def test_the_doctor_command_passes_after_a_day_and_fails_without_a_database(
     ):
         assert name in out
     assert not [line for line in out.splitlines() if line.startswith("fail")]
-    assert datetime.now(UTC).strftime("%Y-%m-%d") in out
+    assert "2026-11-19" in out
 
 
 def test_replay_needs_no_key_and_a_live_run_without_one_says_so(
@@ -631,3 +633,47 @@ def test_doctor_judges_a_job_by_its_latest_attempt_not_its_newest_row(
     assert found["job collect"].status == doctor.FAIL
     assert "(FetchError)" in found["job collect"].detail
     assert found["job screen"].status == doctor.OK
+
+
+# --- What the first live run showed ---------------------------------------------------------------
+
+
+def test_a_source_that_fails_says_why_in_the_log(engine: Engine, config: ModelsConfig) -> None:
+    class OneDown(FakeTransport):
+        def send(self, request: Any) -> Any:
+            if request.host == "vendor.example.org" and request.path == "/feed.xml":
+                raise FetchError("vendor.example.org answered 503")
+            return super().send(request)
+
+    result, lines = day(engine, config, transport=OneDown())
+    assert result.ok is True
+    assert result.stages["collect"]["sources_failed"] == 1
+    failures = [line for line in lines if line["event"] == "source.failed"]
+    assert failures == [
+        {
+            "ts": "2026-11-19T11:15:00Z",
+            "event": "source.failed",
+            "day": "2026-11-19",
+            "source": "vendor",
+            "error": "FetchError: vendor.example.org answered 503",
+        }
+    ]
+
+
+def test_the_collect_command_says_why_a_source_was_not_collected(
+    cli_day: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Redirecting(FakeTransport):
+        def send(self, request: Any) -> Any:
+            if request.host == "papers.example.org" and request.path == "/feed.xml":
+                from ai_briefing.sources.transport import HopResponse
+
+                return HopResponse(status=301, headers={"location": "https://cdn.example.com/feed"})
+            return super().send(request)
+
+    monkeypatch.setattr(cli, "make_fetcher", lambda: make_fetcher(Redirecting()))
+    cli.main(["db", "upgrade", *cli_day])
+    capsys.readouterr()
+    assert cli.main(["collect", *cli_day]) == 0
+    error = capsys.readouterr().err
+    assert "papers was not collected: Blocked: cdn.example.com is not a host" in error

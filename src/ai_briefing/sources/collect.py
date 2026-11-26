@@ -31,8 +31,9 @@ from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import BodySource, FetchStatus, SourceKind, SourceMode
 from ai_briefing.domain.records import DocumentObservation, Source, SourceDocument
-from ai_briefing.sources.feeds import FeedEntry, parse_feed
+from ai_briefing.sources.feeds import FeedEntry, FeedError, parse_feed
 from ai_briefing.sources.fetcher import Fetcher, FetchResult
+from ai_briefing.sources.network import FetchError
 from ai_briefing.sources.text import page_to_text
 from ai_briefing.storage import repositories, source_state
 from ai_briefing.storage.jobs import JobOutcome, run_job, utc_now
@@ -96,12 +97,15 @@ def collect(
     configuration_hash: str,
     only: str | None = None,
     idempotency_key: str | None = None,
+    on_failure: Callable[[str, str], None] | None = None,
     clock: Callable[[], datetime] = utc_now,
 ) -> JobOutcome:
     """Fetch every enabled feed source and store what is new. Returns the job's outcome.
 
     With no ``idempotency_key`` each call is its own run. The daily run passes the day,
     so collecting twice for one day does nothing the second time.
+
+    ``on_failure`` is told each source that failed and why, as it happens.
     """
     started = clock()
     wanted = [s for s in catalogue if only is None or s.id == only]
@@ -141,7 +145,15 @@ def collect(
                 # that its content provoked. It is counted and recorded, and the other
                 # sources are still collected.
                 item.result = None
-                item.error = f"{type(error).__name__}: {error}"[:300]
+                # A refusal by the network policy, a failed request and an unreadable feed
+                # are described in this project's own words. Anything else may quote what
+                # the source sent, so only its kind is kept.
+                expected = isinstance(error, FetchError | FeedError)
+                item.error = (
+                    f"{type(error).__name__}: {error}"[:300] if expected else type(error).__name__
+                )
+                if on_failure is not None:
+                    on_failure(source.id, item.error)
 
     def work(connection: Connection, _job_run_id: int) -> Mapping[str, int]:
         counts = {

@@ -153,6 +153,9 @@ def run_day(
             application_version=application_version,
             configuration_hash=configuration_hash,
             idempotency_key=f"collect:{day}",
+            on_failure=lambda source_id, why: log.event(
+                "source.failed", day=day, source=source_id, error=why
+            ),
             clock=clock,
         )
         return outcome.counts, outcome.ran
