@@ -221,3 +221,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AI Briefing local data: the database, its lock and exports
+/data/
