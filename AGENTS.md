@@ -2,7 +2,7 @@
 
 AI Briefing collects developments in AI, machine learning, data science and software engineering from a small set of curated sources, assesses them on evidence, and prepares a short daily briefing. One Python package, run as short scheduled jobs, with SQLite as the system of record.
 
-The specification is [RFC v0.3](docs/rfc/AI-Briefing-RFC-v0.3.md). The decisions that bind it are the accepted [ADRs 001–013](docs/adr/README.md). The order of work is the [milestone plan](docs/planning/milestones.md). Read the ADR an issue concerns before changing anything.
+The specification is [RFC v0.3](docs/rfc/AI-Briefing-RFC-v0.3.md). The decisions that bind it are the accepted [ADRs 001–014](docs/adr/README.md). The order of work is the [milestone plan](docs/planning/milestones.md). Read the ADR an issue concerns before changing anything.
 
 These instructions apply to every coding agent and reviewer working in this repository.
 
@@ -114,7 +114,7 @@ Do not edit a protected path as a side effect of other work. If an issue seems t
 - The description states: what changed and why; the ADRs it implements or touches; any protected paths touched; the checks you actually ran and their results; known limitations and anything not verified.
 - **Never state that a test or check passed unless you ran it and it passed.** If a check does not exist yet or could not be run, say so.
 - A P0 finding means stop and escalate to the owner; do not attempt a fix first. Respond to every other review finding with a fix or with reasoning. Do not resolve a thread you dispute; leave it for the owner.
-- At most two rounds of fixes per pull request. After that, summarise what remains and stop.
+- At most two rounds of fixes per pull request. One further round is allowed (ADR-014) only when every remaining finding is a valid P1, P2 or P3 that you do not dispute, no required check is failing, the fix is small, and the fix touches no protected path. After that, summarise what remains and stop.
 
 ## Commands
 

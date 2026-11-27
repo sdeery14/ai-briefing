@@ -1092,8 +1092,61 @@ def test_the_third_fix_round_is_refused() -> None:
     assert result["action"] == "label"
     assert result["outcome"] == "needs-human"
     assert "fix-round limit of 2" in result["reasons"][0]
-    with_finding = decide(threads=[thread()], fix_rounds=2)
-    assert with_finding["outcome"] == "needs-human"
+
+
+def test_after_two_rounds_one_further_round_is_offered_for_findings_alone() -> None:
+    # ADR-014. Checks pass, findings are unanswered, nothing is disputed.
+    result = decide(threads=[thread()], fix_rounds=2)
+    assert result["action"] == "fix-further"
+    assert result["outcome"] is None
+    assert result["automatic_merge"] is False
+    assert "1 review finding(s) have no response" in result["reasons"][0]
+    assert "only if you agree every remaining finding is valid" in result["reasons"][-1]
+    assert "touches no protected path" in result["reasons"][-1]
+
+
+def test_the_further_round_is_not_offered_when_a_check_fails_or_a_finding_is_disputed() -> None:
+    failing = decide(failing_snapshot(), [thread()], fix_rounds=2)
+    assert (failing["action"], failing["outcome"]) == ("label", "needs-human")
+    disputed = decide(threads=[thread(), thread("T2", replies=["sdeery14"])], fix_rounds=2)
+    assert (disputed["action"], disputed["outcome"]) == ("label", "needs-human")
+    assert "fix-round limit of 2" in disputed["reasons"][0]
+
+
+def test_the_further_round_needs_a_p1_p2_or_p3_tag_on_every_finding() -> None:
+    for severity in ("P1", "P2", "P3"):
+        tagged = decide(threads=[thread(body=f"{severity} A defect.")], fix_rounds=2)
+        assert tagged["action"] == "fix-further"
+    untagged = thread("T2", body="The budget check is skipped.")
+    for threads in ([untagged], [thread(), untagged]):
+        result = decide(threads=threads, fix_rounds=2)
+        assert (result["action"], result["outcome"]) == ("label", "needs-human")
+    # In the two ordinary rounds an untagged finding is still fixed, as before.
+    assert decide(threads=[untagged], fix_rounds=1)["action"] == "fix"
+
+
+def test_a_p0_is_escalated_and_never_given_the_further_round() -> None:
+    result = decide(threads=[thread(body="P0 data loss"), thread("T2")], fix_rounds=2)
+    assert result["action"] == "escalate"
+
+
+def test_after_the_further_round_nothing_more_is_offered() -> None:
+    for used in (3, 4):
+        result = decide(threads=[thread()], fix_rounds=used)
+        assert (result["action"], result["outcome"]) == ("label", "needs-human")
+        assert "the further fix round (ADR-014) is used" in result["reasons"][0]
+
+
+def test_a_lowered_limit_turns_the_further_round_off() -> None:
+    for lowered in (0, 1):
+        result = round_outcome.decide(
+            snap(),
+            [review_threads.describe(thread(), CONFIG)],
+            fix_rounds=lowered,
+            max_fix_rounds=lowered,
+            labels=LABELS,
+        )
+        assert (result["action"], result["outcome"]) == ("label", "needs-human")
 
 
 def test_a_disputed_finding_goes_to_the_owner() -> None:
@@ -1190,7 +1243,15 @@ def test_no_outcome_permits_a_merge_when_the_owner_keeps_merge_authority() -> No
                 assert result["automatic_merge"] is False
                 assert result["merge"] == "owner-only"
                 assert result["outcome"] in (None, "ready-for-owner", "needs-human")
-    assert actions <= {"escalate", "wait", "fix", "resolve-conflicts", "label", "none"}
+    assert actions <= {
+        "escalate",
+        "wait",
+        "fix",
+        "fix-further",
+        "resolve-conflicts",
+        "label",
+        "none",
+    }
     assert "merge" not in actions
 
 
@@ -1247,6 +1308,85 @@ def test_a_third_fix_round_cannot_be_recorded() -> None:
     with pytest.raises(round_outcome.LimitReached, match="all 2 fix rounds"):
         round_outcome.record_fix_round(gh, CONFIG, 12)
     assert gh.mutations == []
+
+
+def test_the_further_fix_round_is_recorded_once_straight_after_the_two() -> None:
+    gh = FakeGh(comments=[marker(1), marker(2)], threads=[thread()])
+    message = round_outcome.record_fix_round(gh, CONFIG, 12, further=True)
+    assert message == "recorded the further fix round, after 2 of 2"
+    ((query, variables),) = gh.mutations
+    assert query == COMMENT_MUTATION
+    assert "Further fix round (ADR-014)" in variables["body"]
+    assert "<!-- round-fix-round:3 -->" in variables["body"]
+    # That comment counts, so the round is used.
+    assert round_outcome.fix_rounds_used([marker(1), marker(2), marker(3)], CONFIG) == 3
+
+    used = FakeGh(comments=[marker(1), marker(2), marker(3)], threads=[thread()])
+    with pytest.raises(round_outcome.LimitReached, match="no further fix round"):
+        round_outcome.record_fix_round(used, CONFIG, 12, further=True)
+    with pytest.raises(round_outcome.LimitReached, match="all 2 fix rounds"):
+        round_outcome.record_fix_round(used, CONFIG, 12)
+    assert used.mutations == []
+
+
+def test_the_further_fix_round_cannot_be_recorded_early_or_over_a_dispute() -> None:
+    early = FakeGh(comments=[marker(1)], threads=[thread()])
+    with pytest.raises(round_outcome.LimitReached, match="ordinary fix rounds left"):
+        round_outcome.record_fix_round(early, CONFIG, 12, further=True)
+    assert early.mutations == []
+
+    disputed = FakeGh(comments=[marker(1), marker(2)], threads=[thread(replies=["sdeery14"])])
+    with pytest.raises(round_outcome.LimitReached, match="disputed finding"):
+        round_outcome.record_fix_round(disputed, CONFIG, 12, further=True)
+    assert disputed.mutations == []
+
+    untagged = FakeGh(
+        comments=[marker(1), marker(2)],
+        threads=[thread(), thread("T2", body="The budget check is skipped.")],
+    )
+    with pytest.raises(round_outcome.LimitReached, match="no P1, P2 or P3 tag"):
+        round_outcome.record_fix_round(untagged, CONFIG, 12, further=True)
+    assert untagged.mutations == []
+
+    # A required check that failed after status offered the round: it is read again.
+    failing = FakeGh(
+        pull_request=pull(failed_checks()), comments=[marker(1), marker(2)], threads=[thread()]
+    )
+    assert round_outcome.status(failing, CONFIG, 12)["outcome"] == "needs-human"
+    with pytest.raises(
+        round_outcome.LimitReached, match="does not qualify for the further fix round now"
+    ):
+        round_outcome.record_fix_round(failing, CONFIG, 12, further=True)
+    assert failing.mutations == []
+
+    # Nor when the pull request's state cannot be read at that moment.
+    unreadable = FakeGh(comments=[marker(1), marker(2)], threads=[thread()], fail_on=["rules"])
+    with pytest.raises(
+        round_outcome.LimitReached, match="does not qualify for the further fix round now"
+    ):
+        round_outcome.record_fix_round(unreadable, CONFIG, 12, further=True)
+    assert unreadable.mutations == []
+
+    critical = FakeGh(comments=[marker(1), marker(2)], threads=[p0_thread()])
+    with pytest.raises(round_outcome.EscalationRequired):
+        round_outcome.record_fix_round(critical, CONFIG, 12, further=True)
+    assert critical.mutations == []
+
+
+def test_the_further_fix_round_is_a_flag_on_the_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGh(comments=[marker(1), marker(2)], threads=[thread()])
+    monkeypatch.setattr(round_outcome, "with_retries", lambda _: gh)
+    assert round_outcome.main(["record-fix-round", "12"]) == 4
+    assert gh.mutations == []
+    assert round_outcome.main(["record-fix-round", "12", "--further"]) == 0
+    assert "recorded the further fix round" in capsys.readouterr().out
+    assert len(gh.mutations) == 1
+
+
+def test_there_is_exactly_one_further_fix_round() -> None:
+    assert round_lib.FURTHER_FIX_ROUNDS == 1
 
 
 def test_the_fix_round_limit_cannot_be_raised_above_two() -> None:
@@ -1570,6 +1710,10 @@ def test_when_fix_rounds_cannot_be_counted_no_further_fix_round_is_offered() -> 
     result = round_outcome.status(gh, CONFIG, 12)
     assert result["action"] != "fix"
     assert result["outcome"] == "needs-human"
+    # Nor the further round, when findings are all that remains.
+    findings_only = FakeGh(threads=[thread()], fail_on=["comments"])
+    result = round_outcome.status(findings_only, CONFIG, 12)
+    assert (result["action"], result["outcome"]) == ("label", "needs-human")
 
 
 def test_the_wait_reports_a_p0_even_when_its_own_snapshot_fails(

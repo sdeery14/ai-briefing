@@ -37,6 +37,10 @@ true only on a result whose action is ``merge``.
 ``record-fix-round`` posts a marker comment on the pull request and refuses when the limit
 is reached. Fix rounds are counted from those comments, so the count survives a restarted
 session and does not depend on the agent's memory.
+
+After the limit, ``status`` may answer ``fix-further`` (ADR-014): one further fix round,
+which the agent takes only if it agrees every remaining finding is valid, the fix is small
+and the fix touches no protected path. It is recorded with ``record-fix-round --further``.
 """
 
 from __future__ import annotations
@@ -54,6 +58,8 @@ import pr_wait
 import review_threads
 from round_lib import (
     COMMENT_MUTATION,
+    FURTHER_FIX_ROUNDS,
+    HARD_MAX_FIX_ROUNDS,
     PR_QUERY,
     Config,
     Gh,
@@ -151,6 +157,26 @@ def fix_rounds_used(comments: list[dict[str, Any]], config: Config) -> int:
         for match in MARKER.finditer(str(comment.get("body") or ""))
     }
     return len(rounds)
+
+
+FIXABLE_SEVERITIES = frozenset({"P1", "P2", "P3"})
+FURTHER_CONDITIONS = (
+    "one further fix round is allowed (ADR-014) only if you agree every remaining finding "
+    "is valid, the fix is small, and the fix touches no protected path; otherwise label "
+    "the pull request needs-human"
+)
+
+
+def further_round_open(used: int, max_fix_rounds: int) -> bool:
+    """Whether the one further fix round of ADR-014 is still to be had: the two ordinary
+    rounds are used, exactly, and the configuration has not lowered the limit."""
+    return max_fix_rounds == HARD_MAX_FIX_ROUNDS and used == max_fix_rounds
+
+
+def all_tagged_for_a_fix(threads: list[dict[str, Any]]) -> bool:
+    """Whether every finding carries a P1, P2 or P3 tag (ADR-014, condition 1). A finding
+    with no tag has no known severity, so it does not qualify."""
+    return all(t.get("severity") in FIXABLE_SEVERITIES for t in threads)
 
 
 def decide(
@@ -263,10 +289,20 @@ def decide(
         if unanswered:
             why.append(f"{len(unanswered)} review finding(s) have no response")
         if fix_rounds >= max_fix_rounds:
-            return needs_human(
-                f"fix-round limit of {max_fix_rounds} reached with work remaining: "
-                + "; ".join(why)
-            )
+            limit = f"fix-round limit of {max_fix_rounds} reached with work remaining: "
+            if (
+                further_round_open(fix_rounds, max_fix_rounds)
+                and ci != "fail"
+                and not disputed
+                and all_tagged_for_a_fix(unanswered)
+            ):
+                # ADR-014. What the script can see allows it; the rest is for the agent.
+                result.update(action="fix-further")
+                result["reasons"] = [*why, FURTHER_CONDITIONS]
+                return result
+            if fix_rounds > max_fix_rounds:
+                limit = "the further fix round (ADR-014) is used and work remains: "
+            return needs_human(limit + "; ".join(why))
         result.update(action="fix")
         result["reasons"] = why
         return result
@@ -367,8 +403,8 @@ def status(gh: Gh, config: Config, number: int, *, timed_out: bool = False) -> d
         snap = {"pr": number, "error": f"{type(error).__name__}: {str(error)[:200]}"}
     if timed_out:
         snap["timeout"] = True
-    # If the count cannot be read, assume the budget is spent: no further fix round.
-    fix_rounds = config.max_fix_rounds
+    # If the count cannot be read, assume the budget is spent: no fix round of any kind.
+    fix_rounds = config.max_fix_rounds + FURTHER_FIX_ROUNDS
     protected: list[dict[str, str]] | None = None
     eligibility: merge_eligibility.Result | None = None
     pr_labels: list[str] | None = None
@@ -405,11 +441,12 @@ def status(gh: Gh, config: Config, number: int, *, timed_out: bool = False) -> d
     return result
 
 
-def record_fix_round(gh: Gh, config: Config, number: int) -> str:
+def record_fix_round(gh: Gh, config: Config, number: int, *, further: bool = False) -> str:
     """Record that a fix round is starting.
 
     Refuses once the limit has been used, and refuses while a P0 finding is open: a P0 is
-    escalated, not fixed.
+    escalated, not fixed. With ``further``, records the one further round of ADR-014: only
+    straight after the ordinary rounds, only once, and not while a finding is disputed.
     """
     unresolved = review_threads.unresolved_threads(gh, config, number)
     if review_threads.critical_findings(unresolved):
@@ -425,7 +462,36 @@ def record_fix_round(gh: Gh, config: Config, number: int) -> str:
         )
     comments = rest_pages(gh, f"repos/{config.repository}/issues/{number}/comments")
     used = fix_rounds_used(comments, config)
-    if used >= config.max_fix_rounds:
+    if further:
+        if used < config.max_fix_rounds:
+            raise LimitReached(
+                f"pull request {number} has ordinary fix rounds left; record one of those"
+            )
+        if not further_round_open(used, config.max_fix_rounds):
+            raise LimitReached(
+                f"pull request {number} has no further fix round to use; "
+                f"label it {config.label_needs_human} and stop"
+            )
+        if not all_tagged_for_a_fix(unresolved):
+            raise LimitReached(
+                f"pull request {number} has a finding with no P1, P2 or P3 tag, so the "
+                f"further fix round does not apply; label it {config.label_needs_human} and stop"
+            )
+        if any(t.get("answered") for t in unresolved):
+            raise LimitReached(
+                f"pull request {number} has a disputed finding, so the further fix round "
+                f"does not apply; label it {config.label_needs_human} and stop"
+            )
+        # Everything is read afresh, required checks included: the round is recorded only
+        # if ``status`` would offer it at this moment.
+        now = status(gh, config, number)
+        if now.get("action") != "fix-further":
+            why = "; ".join(str(r) for r in now.get("reasons") or []) or str(now.get("action"))
+            raise LimitReached(
+                f"pull request {number} does not qualify for the further fix round now "
+                f"({why}); run status again and follow it"
+            )
+    elif used >= config.max_fix_rounds:
         raise LimitReached(
             f"pull request {number} has used all {config.max_fix_rounds} fix rounds; "
             f"label it {config.label_needs_human} and stop"
@@ -435,6 +501,14 @@ def record_fix_round(gh: Gh, config: Config, number: int) -> str:
     if not isinstance(pull, dict) or pull.get("state") != "OPEN":
         raise GhError(f"pull request {number} is not open")
     current = used + 1
+    if further:
+        body = (
+            f"Further fix round (ADR-014), after {used} of {config.max_fix_rounds}. The agent "
+            "judged every remaining finding valid, and the fix small and outside the "
+            f"protected paths. <!-- round-fix-round:{current} -->"
+        )
+        graphql(gh, COMMENT_MUTATION, subject=str(pull["id"]), body=body)
+        return f"recorded the further fix round, after {used} of {config.max_fix_rounds}"
     body = f"Fix round {current} of {config.max_fix_rounds}. <!-- round-fix-round:{current} -->"
     graphql(gh, COMMENT_MUTATION, subject=str(pull["id"]), body=body)
     return f"recorded fix round {current} of {config.max_fix_rounds}"
@@ -522,6 +596,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     recorder = sub.add_parser("record-fix-round", help="record the start of a fix round")
     recorder.add_argument("number", type=int)
+    recorder.add_argument(
+        "--further", action="store_true", help="the one further fix round of ADR-014"
+    )
     merger = sub.add_parser("merge", help="merge, if every ADR-013 condition holds")
     merger.add_argument("number", type=int)
     args = parser.parse_args(argv)
@@ -529,7 +606,8 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config()
         gh = with_retries(run_gh)
         if args.command == "record-fix-round":
-            sys.stdout.write(record_fix_round(gh, config, args.number) + "\n")
+            message = record_fix_round(gh, config, args.number, further=args.further)
+            sys.stdout.write(message + "\n")
             return 0
         if args.command == "merge":
             # No retries around the merge: a repeated mutation must never be sent blind.
