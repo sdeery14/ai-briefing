@@ -16,9 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from functools import partial
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -33,15 +34,19 @@ from ai_briefing.domain.enums import (
     Confidence,
     EditorialClass,
     LLMCallStatus,
+    SourceKind,
+    SourceRole,
 )
 from ai_briefing.domain.records import Briefing, BriefingItem, Source
 from ai_briefing.editorial.policy import v0 as policy
 from ai_briefing.editorial.process import FRESHNESS, current_input_hash, redecide
+from ai_briefing.sources import hn
 from ai_briefing.storage import queries, repositories, schema
 
 SCHEMA_VERSION = "daily_briefing.v1"
 MAX_STORIES = 5
 MAX_WATCH = 10
+MAX_SOURCES = 8  # the contract's limit on a story's evidence list
 HEADLINE_CHARS = 200
 SUMMARY_CHARS = 800
 WHY_CHARS = 600
@@ -124,6 +129,38 @@ def _why(item: queries.Assessed, draft: dict[str, str]) -> str:
     return f"{why} {note}".strip()
 
 
+def _sources(item: queries.Assessed) -> list[dict[str, str]]:
+    """The documents behind a story, the one it is known by first. Every address is a
+    stored document's own, or, for a Hacker News item, its discussion page, built from
+    the item's stored id."""
+    listed = [
+        {
+            "title": clip(item.document.title, TITLE_CHARS),
+            "url": item.document.canonical_url,
+            "source_name": clip(item.source_name, SOURCE_NAME_CHARS),
+            "source_role": item.document.source_role.value,
+        }
+    ]
+    for other in item.others:
+        url = other.document.canonical_url
+        if other.source_kind is SourceKind.HN_API:
+            try:
+                url = hn.discussion_url(other.document.external_id)
+            except ValueError:
+                continue
+        if not WEB_URL.fullmatch(url) or len(listed) >= MAX_SOURCES:
+            continue
+        listed.append(
+            {
+                "title": clip(other.document.title, TITLE_CHARS),
+                "url": url,
+                "source_name": clip(other.source_name, SOURCE_NAME_CHARS),
+                "source_role": other.document.source_role.value,
+            }
+        )
+    return listed
+
+
 def _again(item: queries.Assessed, returning: Mapping[int, str]) -> str:
     why = returning.get(item.story.id or 0)
     return f"; briefed before, and {why}" if why else ""
@@ -146,7 +183,9 @@ def repetition(
         why = policy.may_appear_again(
             briefed_class=before.final_class,
             current_class=item.decision.final_class,
-            new_independent_evidence=_new_evidence(item, before.observation_ids),
+            new_independent_evidence=_new_evidence(
+                item, before.observation_ids, partial(_role_of, connection, item)
+            ),
         )
         if why is not None and item.story.id is not None:
             allowed.append(item)
@@ -154,17 +193,35 @@ def repetition(
     return allowed, returning
 
 
-def _new_evidence(item: queries.Assessed, already_shown: frozenset[int]) -> bool:
-    """Whether a verified quotation from a primary or independent source rests on an
-    observation the previously briefed assessment had not been shown.
+def _role_of(
+    connection: Connection, item: queries.Assessed, observation_id: int
+) -> SourceRole | None:
+    """The role of the source of the document an observation is of, if it is in the story."""
+    observation = queries.observation(connection, observation_id)
+    if observation is None:
+        return None
+    for document in item.documents:
+        if document.id == observation.document_id:
+            return document.source_role
+    return None
+
+
+def _new_evidence(
+    item: queries.Assessed,
+    already_shown: frozenset[int],
+    role_of: Callable[[int], SourceRole | None],
+) -> bool:
+    """Whether a verified quotation rests on an observation the previously briefed
+    assessment had not been shown, from a primary or independent source.
 
     Compared by observation, not by time: what counts is that the evidence is not what the
-    reader was already given.
+    reader was already given. The role is that of the source that was quoted, whichever
+    document the story is known by.
     """
-    if item.document.source_role not in policy.INDEPENDENT_ROLES:
-        return False
     return any(
-        evidence.counts_as_support and evidence.observation_id not in already_shown
+        evidence.counts_as_support
+        and evidence.observation_id not in already_shown
+        and role_of(evidence.observation_id) in policy.INDEPENDENT_ROLES
         for evidence in item.evidence
     )
 
@@ -225,14 +282,7 @@ def build(
                 "summary": clip(draft["summary"] or item.document.title, SUMMARY_CHARS),
                 "why_it_matters": _why(item, draft),
                 "independent_source_count": item.decision.independent_source_count,
-                "evidence": [
-                    {
-                        "title": clip(item.document.title, TITLE_CHARS),
-                        "url": item.document.canonical_url,
-                        "source_name": clip(item.source_name, SOURCE_NAME_CHARS),
-                        "source_role": item.document.source_role.value,
-                    }
-                ],
+                "evidence": _sources(item),
             }
         )
         reason = f"class {item.decision.final_class.value}, ranked {len(stories)} of the day"
@@ -339,7 +389,7 @@ def compose(
         reference - FRESHNESS,
         lambda item: current_input_hash(connection, sources, item),
     )
-    assessed = [item for item in assessed if item.document.fresh_at < end]
+    assessed = [item for item in assessed if item.fresh_at < end]
     assessed, returning = repetition(connection, assessed, local_date)
     reasons = [BUDGET_REASON] if _budget_refusals(connection, start, end) else []
     previous = latest_briefing(connection, local_date, BriefingVariant.PIPELINE)

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -153,16 +152,14 @@ def test_new_evidence_is_an_observation_the_reader_was_not_given_from_a_source_t
     role: SourceRole, cited: int, already_shown: set[int], new: bool
 ) -> None:
     item = assessed(1, PRACTICAL)  # its one verified quotation cites observation 1
-    item = dataclasses.replace(
-        item, document=item.document.model_copy(update={"source_role": role})
-    )
     assert {e.observation_id for e in item.evidence} == {cited}
-    assert composing._new_evidence(item, frozenset(already_shown)) is new
+    # The role is that of the source that was quoted, whatever the story is known by.
+    assert composing._new_evidence(item, frozenset(already_shown), lambda _id: role) is new
 
 
 def test_evidence_that_failed_its_check_is_not_new_evidence() -> None:
     item = assessed(1, WATCH, verified=0)
-    assert composing._new_evidence(item, frozenset()) is False
+    assert composing._new_evidence(item, frozenset(), lambda _id: SourceRole.PRIMARY) is False
 
 
 # "full" in full-width letters, which NFKC folds to the ordinary ones.
