@@ -303,10 +303,34 @@ def _assess(payload: dict[str, Any]) -> dict[str, Any]:
     return answer
 
 
+CONCEPT_BODY = (
+    "Retrieval means looking up passages that may hold an answer before a model writes one. "
+    "This note is synthetic and exists only for the tests."
+)
+
+
+def _concept(payload: dict[str, Any]) -> dict[str, Any]:
+    """A concept note for the sound paper, when it is among the stories and retrieval has
+    not been explained recently. Otherwise nothing qualifies, as on most days."""
+    chosen = [s for s in payload["stories"] if "sound paper" in s["headline"]]
+    if not chosen or "retrieval-evaluation" in payload["recently_explained"]:
+        return {"qualifies": False, "concept": "", "title": "", "body": "", "related_item_id": ""}
+    return {
+        "qualifies": True,
+        "concept": "Retrieval evaluation",
+        "title": "What retrieval evaluation measures",
+        "body": CONCEPT_BODY,
+        "related_item_id": chosen[0]["item_id"],
+    }
+
+
 def scripted(request: ModelRequest) -> ModelResponse:
     """A deterministic stand-in for the model: its answer depends only on the request."""
     payload = json.loads(request.user)
-    answer = _screen(payload) if "items" in payload else _assess(payload)
+    if "stories" in payload:
+        answer = _concept(payload)
+    else:
+        answer = _screen(payload) if "items" in payload else _assess(payload)
     text = json.dumps(answer, ensure_ascii=False)
     return ModelResponse(text=text, stop_reason="end_turn", usage=_usage(request, text))
 

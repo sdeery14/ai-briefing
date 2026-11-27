@@ -336,7 +336,8 @@ def test_budget_status_equals_the_sum_of_recorded_calls_including_refused_and_fa
     tasks = spend_by_task(engine, NOW)
     assert sum((t.cost for t in tasks), Decimal(0)) == total == month_to_date(engine, NOW)
     assert sum(t.calls for t in tasks) == len(calls)  # every call, whatever its outcome
-    assert [t.task for t in tasks] == ["assessment", "screening"]
+    # The concept-note question is a task of its own since issue 1.11.
+    assert [t.task for t in tasks] == ["assessment", "concept_note", "screening"]
     spend = current_spend(engine, tight.budget, NOW)
     assert spend.month_to_date == total
     assert spend.left_this_month == Decimal("15.00") - total
@@ -406,7 +407,8 @@ def test_the_budget_status_command_agrees_with_the_recorded_calls(
     status = json.loads(capsys.readouterr().out)
     assert Decimal(status["monthly_limit"]) == Decimal("15")
     tasks = {t["task"]: t for t in status["tasks"]}
-    assert set(tasks) == {"assessment", "screening"}
+    assert set(tasks) == {"assessment", "concept_note", "screening"}
+    assert tasks["concept_note"]["calls"] == 1
     assert tasks["assessment"]["calls"] == 8
     assert tasks["screening"]["calls"] == 1
     total = sum((Decimal(t["cost"]) for t in status["tasks"]), Decimal(0))
@@ -547,7 +549,7 @@ def test_replay_needs_no_key_and_a_live_run_without_one_says_so(
     capsys.readouterr()
     assert cli.main(["run", *cli_day]) == 1
     assert "no API key" in capsys.readouterr().err
-    assert len(ReplayBackend(RECORDED)) == 9
+    assert len(ReplayBackend(RECORDED)) == 10  # nine in processing, and the concept question
 
 
 # --- The briefing stage is a job ------------------------------------------------------------------

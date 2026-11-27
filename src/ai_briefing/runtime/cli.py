@@ -81,6 +81,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=("markdown", "json"), default="markdown", help="what to print"
     )
 
+    export = briefing_commands.add_parser(
+        "export", help="write a day's stored briefing to the export directory"
+    )
+    export.add_argument("--date", help="the local date of the briefing (default: today)")
+    export.add_argument("--timezone", help=TIMEZONE_HELP)
+    export.add_argument("--database", help=DATABASE_HELP)
+    export.add_argument(
+        "--output-dir",
+        metavar="DIR",
+        help="where to write (default: AI_BRIEFING_EXPORT_DIR, else export/ beside the database)",
+    )
+
     run = commands.add_parser(
         "run", help="run the day's jobs in order: collect, process, compose the briefing"
     )
@@ -350,6 +362,42 @@ def _briefing_generate(
     return 0
 
 
+def _briefing_export(
+    database: str | None, date_text: str | None, timezone_text: str | None, output: str | None
+) -> int:
+    """Write the day's latest stored briefing. Composes nothing and calls no model."""
+    from ai_briefing.briefings.compose import latest_briefing
+    from ai_briefing.briefings.export import ExportError, export, export_directory
+    from ai_briefing.domain.enums import BriefingVariant
+    from ai_briefing.storage import database as storage
+
+    path = storage.database_path(database)
+    try:
+        day, _timezone = _day(date_text, timezone_text)
+        if not path.is_file():
+            raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
+        engine = storage.create_database_engine(path)
+        try:
+            if storage.current_revision(engine) != storage.head_revision():
+                raise storage.StorageError(
+                    f"{path} is not at the current schema; run `ai-briefing db upgrade`"
+                )
+            with engine.connect() as connection:
+                briefing = latest_briefing(connection, day, BriefingVariant.PIPELINE)
+        finally:
+            engine.dispose()
+        if briefing is None:
+            raise ExportError(
+                f"there is no briefing for {day.isoformat()}; "
+                "run `ai-briefing briefing generate` first"
+            )
+        written = export(briefing.document(), export_directory(output, path))
+    except (ExportError, storage.StorageError, ValueError, OSError) as error:
+        return _fail(error)
+    sys.stdout.write(f"{written.latest}\n{written.archived}\n")
+    return 0
+
+
 def _run_day(
     database: str | None, date_text: str | None, timezone_text: str | None, replay: str | None
 ) -> int:
@@ -537,6 +585,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _process(args.database, args.date, args.timezone, args.replay)
     if args.command == "briefing" and args.briefing_command == "generate":
         return _briefing_generate(args.database, args.date, args.timezone, args.format)
+    if args.command == "briefing" and args.briefing_command == "export":
+        return _briefing_export(args.database, args.date, args.timezone, args.output_dir)
     if args.command == "run":
         return _run_day(args.database, args.date, args.timezone, args.replay)
     if args.command == "doctor":
