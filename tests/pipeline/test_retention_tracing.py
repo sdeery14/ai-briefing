@@ -21,7 +21,13 @@ from ai_briefing.domain.records import Source
 from ai_briefing.llm.config import ModelsConfig
 from ai_briefing.runtime import cli, tracing
 from ai_briefing.runtime.daily import STAGES
-from ai_briefing.storage.retention import body_retention, purge, purge_now, request_retention
+from ai_briefing.storage.retention import (
+    body_retention,
+    observations_shown,
+    purge,
+    purge_now,
+    request_retention,
+)
 
 from .conftest import (
     CATALOGUE,
@@ -38,6 +44,20 @@ from .test_daily_run import cli_day, day  # noqa: F401 - cli_day is a fixture
 from .test_first_briefing import table
 
 DAYS = timedelta(days=1)
+NOTHING = {
+    "bodies_purged": 0,
+    "bodies_without_permission": 0,
+    "requests_purged": 0,
+    "requests_with_purged_text": 0,
+}
+COPY_A_CALL = (
+    "INSERT INTO llm_calls (job_run_id, purpose, prompt_id, prompt_hash, provider, "
+    "model_id, tokens_in, tokens_out, estimated_cost_usd, price_table_version, "
+    "status, retries, request_payload, created_at) "
+    "SELECT job_run_id, purpose, prompt_id, prompt_hash, provider, model_id, "
+    "tokens_in, tokens_out, estimated_cost_usd, price_table_version, status, "
+    "retries, coalesce(:payload, request_payload), :created FROM llm_calls WHERE id = :id"
+)
 
 
 def purged(
@@ -107,7 +127,7 @@ def test_nothing_is_purged_inside_its_retention(a_day: Engine) -> None:
     before = history(a_day)
     assert len(bodies(a_day)) == 1
     counts = purged(a_day, NOW + 89 * DAYS)
-    assert counts == {"bodies_purged": 0, "bodies_without_permission": 0, "requests_purged": 0}
+    assert counts == NOTHING
     assert history(a_day) == before
 
 
@@ -124,6 +144,7 @@ def test_after_the_purge_no_old_body_or_request_remains_and_the_hashes_do(a_day:
         "bodies_purged": 1,
         "bodies_without_permission": 0,
         "requests_purged": len(calls_before),
+        "requests_with_purged_text": 0,  # every request was past its own 90 days already
     }
     after = history(a_day)
     # No body and no request payload is left, and each says when it went.
@@ -180,7 +201,7 @@ def test_the_purge_is_idempotent(a_day: Engine) -> None:
     assert first["bodies_purged"] == 1
     once = history(a_day)
     again = purged(a_day, when + DAYS)
-    assert again == {"bodies_purged": 0, "bodies_without_permission": 0, "requests_purged": 0}
+    assert again == NOTHING
     # The time of the purge is the first one: nothing is stamped twice.
     assert history(a_day) == once
     assert len([j for j in table(a_day, "job_runs") if j["job"] == "purge"]) == 2
@@ -214,8 +235,81 @@ def test_text_from_a_source_that_no_longer_permits_it_is_purged_at_once(a_day: E
     without_vendor = tuple(s for s in CATALOGUE if s.id != "vendor")
     counts = purged(a_day, NOW + timedelta(minutes=1), without_vendor)
     assert counts["bodies_purged"] == counts["bodies_without_permission"] == 1
-    assert counts["requests_purged"] == 0  # requests are still inside their 90 days
     assert bodies(a_day) == []
+    # The one request that showed the model that text goes with it, though the catalogue
+    # no longer says how long the source's text may be kept. The others are inside their
+    # 90 days and stay.
+    assert counts["requests_purged"] == counts["requests_with_purged_text"] == 1
+    calls = table(a_day, "llm_calls")
+    (emptied,) = [c for c in calls if c["request_payload"] is None]
+    assert emptied["purpose"] == "assessment"
+    assert emptied["request_purged_at"] == NOW + timedelta(minutes=1)
+    assert holding_the_vendor_text(a_day) == []
+
+
+def holding_the_vendor_text(engine: Engine) -> list[dict[str, Any]]:
+    return [
+        c for c in table(engine, "llm_calls") if VENDOR_PAGE_TEXT in (c["request_payload"] or "")
+    ]
+
+
+def test_a_request_never_outlives_the_text_it_holds(a_day: Engine) -> None:
+    # The article's text is sent to the model again 20 days after it was retrieved, as
+    # when a story is assessed again. The copy is recorded as a new request.
+    (first,) = holding_the_vendor_text(a_day)
+    resent = (NOW + 20 * DAYS).isoformat()
+    with a_day.begin() as connection:
+        connection.execute(
+            text(COPY_A_CALL), {"payload": None, "created": resent, "id": first["id"]}
+        )
+    assert len(holding_the_vendor_text(a_day)) == 2
+    month = VENDOR.model_copy(
+        update={"retention_days": VENDOR.retention_days.model_copy(update={"body": 30})}
+    )
+    catalogue = (CATALOGUE[0], month, CATALOGUE[2])
+    # Day 31: the text is past its 30 days. The copy sent on day 20 is only 11 days old,
+    # and it goes all the same, because it holds that text.
+    counts = purged(a_day, NOW + 31 * DAYS, catalogue)
+    assert counts["bodies_purged"] == 1
+    assert counts["requests_with_purged_text"] == 1
+    assert holding_the_vendor_text(a_day) == []
+    assert bodies(a_day) == []
+    # Purging again finds nothing more.
+    again = purged(a_day, NOW + 32 * DAYS, catalogue)
+    assert (again["requests_purged"], again["requests_with_purged_text"]) == (0, 0)
+
+
+def test_a_request_holding_text_purged_on_an_earlier_day_is_caught_later(a_day: Engine) -> None:
+    (first,) = holding_the_vendor_text(a_day)
+    without_vendor = tuple(s for s in CATALOGUE if s.id != "vendor")
+    purged(a_day, NOW + DAYS, without_vendor)
+    assert holding_the_vendor_text(a_day) == []
+    (gone,) = [o for o in table(a_day, "document_observations") if o["body_purged_at"]]
+    # A request naming that observation and recorded after the purge is removed by the
+    # next purge, from the purge time kept on the observation.
+    payload = json.dumps(
+        {"user": json.dumps({"observations": [{"observation_id": gone["id"], "text": "t"}]})}
+    )
+    created = (NOW + 2 * DAYS).isoformat()
+    with a_day.begin() as connection:
+        connection.execute(
+            text(COPY_A_CALL), {"payload": payload, "created": created, "id": first["id"]}
+        )
+    counts = purged(a_day, NOW + 3 * DAYS, CATALOGUE)
+    assert counts["requests_with_purged_text"] == 1
+    assert [c for c in table(a_day, "llm_calls") if c["request_payload"] == payload] == []
+
+
+def test_which_observations_a_request_showed() -> None:
+    def request(user: object) -> str:
+        return json.dumps({"model": "m", "user": json.dumps(user)})
+
+    shown = request({"observations": [{"observation_id": 4}, {"observation_id": 9}]})
+    assert observations_shown(shown) == {4, 9}
+    assert observations_shown(request({"items": [{"id": 4}]})) == set()  # screening
+    assert observations_shown(request({"observations": "none"})) == set()
+    assert observations_shown("not json") == set()
+    assert observations_shown('{"user": 5}') == set()
 
 
 def test_the_database_allows_the_purge_and_nothing_else(a_day: Engine) -> None:
@@ -256,11 +350,7 @@ def test_the_purge_is_the_last_stage_of_the_day(engine: Engine, config: ModelsCo
     assert STAGES[-1] == "purge"
     result, lines = day(engine, config)
     assert result.ok is True
-    assert result.stages["purge"] == {
-        "bodies_purged": 0,
-        "bodies_without_permission": 0,
-        "requests_purged": 0,
-    }
+    assert result.stages["purge"] == NOTHING
     started = [line["stage"] for line in lines if line["event"] == "stage.start"]
     assert started[-1] == "purge"
     # A day 91 days on purges what the first day stored, as part of its own run.
@@ -283,11 +373,7 @@ def test_the_purge_command_reports_what_it_removed(
     cli.main(["run", "--replay", str(RECORDED), *cli_day])
     capsys.readouterr()
     assert cli.main(["retention", "purge", *cli_day]) == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "bodies_purged": 0,
-        "bodies_without_permission": 0,
-        "requests_purged": 0,
-    }
+    assert json.loads(capsys.readouterr().out) == NOTHING
     monkeypatch.setattr(cli, "current_time", lambda: NOW + 91 * DAYS)
     assert cli.main(["retention", "purge", *cli_day]) == 0
     first = json.loads(capsys.readouterr().out)

@@ -11,8 +11,11 @@ How long each is kept:
 - **Article text:** the source's ``retention_days.body``, counted from when the text was
   retrieved. Text held for a source that states no body retention now (it left the
   catalogue, or no longer stores bodies) has no permission behind it and is purged at once.
-- **Request payloads:** they contain source text from any source, so they are kept for the
-  shortest body retention in the catalogue, and never longer than ADR-010's 90 days.
+- **Request payloads:** a request that showed the model an article's text is purged when
+  that text is, whatever the request's own age: the text was collected under one
+  retention and a later copy of it does not get a longer one. Every request is purged in
+  any case after the shortest body retention in the catalogue, and never later than
+  ADR-010's 90 days.
 
 The database allows exactly this change to these two tables and no other (see
 ``schema.PURGEABLE``). Running the purge twice changes nothing the second time.
@@ -20,6 +23,7 @@ The database allows exactly this change to these two tables and no other (see
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 
@@ -43,6 +47,16 @@ def body_retention(catalogue: Sequence[Source]) -> dict[str, int]:
 def request_retention(catalogue: Sequence[Source]) -> int:
     """Days a model-call request payload is kept."""
     return min([MAX_BODY_RETENTION_DAYS, *body_retention(catalogue).values()])
+
+
+def observations_shown(request_payload: str) -> set[int]:
+    """The observations whose text a stored request showed the model. An assessment
+    request names them; any other request, or one that cannot be read, names none."""
+    try:
+        shown = json.loads(json.loads(request_payload)["user"])["observations"]
+        return {int(item["observation_id"]) for item in shown}
+    except (ValueError, KeyError, TypeError):
+        return set()
 
 
 def purge_now(connection: Connection, catalogue: Sequence[Source], now: datetime) -> dict[str, int]:
@@ -73,10 +87,33 @@ def purge_now(connection: Connection, catalogue: Sequence[Source], now: datetime
         )
         .values(request_payload=None, request_purged_at=now)
     )
+    # A younger request may still hold text that has just been purged, or was purged
+    # earlier: an article shown to the model again on a later day, or text from a source
+    # that has since left the catalogue. Such a request goes with the text.
+    gone = set(
+        connection.execute(
+            select(observations.c.id).where(observations.c.body_purged_at.is_not(None))
+        ).scalars()
+    )
+    held = connection.execute(
+        select(calls.c.id, calls.c.request_payload).where(calls.c.request_payload.is_not(None))
+    ).all()
+    with_text = [
+        row.id
+        for row in held
+        if gone and gone.intersection(observations_shown(row.request_payload))
+    ]
+    if with_text:
+        connection.execute(
+            update(calls)
+            .where(calls.c.id.in_(with_text))
+            .values(request_payload=None, request_purged_at=now)
+        )
     return {
         "bodies_purged": bodies + unpermitted,
         "bodies_without_permission": unpermitted,
-        "requests_purged": int(requests.rowcount),
+        "requests_purged": int(requests.rowcount) + len(with_text),
+        "requests_with_purged_text": len(with_text),
     }
 
 
