@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import Engine
 
 from ai_briefing.briefings import concept
-from ai_briefing.briefings.compose import Composed
+from ai_briefing.briefings.compose import Composed, compose
 from ai_briefing.briefings.contract import contract_validator, load_schema
 from ai_briefing.briefings.export import ExportError, export, export_directory
 from ai_briefing.briefings.render import to_markdown
@@ -389,6 +389,53 @@ def test_a_failure_in_asking_for_the_note_does_not_cost_the_briefing(
     assert made.created is True
     assert len(content["stories"]) == 3
     assert "concept_note" not in content
+
+
+def test_an_answer_paid_for_before_a_crash_is_used_on_the_next_attempt(
+    engine: Engine, config: ModelsConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ai_briefing.runtime import daily
+
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    backend = ScriptedBackend()
+
+    def crashing(*args: Any, **kwargs: Any) -> Composed:
+        raise RuntimeError("the process stopped before the briefing was stored")
+
+    # The model answers, and then storing the briefing fails.
+    monkeypatch.setattr(daily, "compose", crashing)
+    with pytest.raises(RuntimeError, match="before the briefing was stored"):
+        composed(engine, config, backend)
+    assert table(engine, "briefings") == []
+    (call,) = [c for c in table(engine, "llm_calls") if c["purpose"] == "concept_note"]
+    assert call["status"] == "succeeded"
+    assert len(concept_requests(backend)) == 1
+
+    # The next attempt has no model client at all. It asks nothing, and the note that was
+    # paid for is in the briefing.
+    monkeypatch.setattr(daily, "compose", compose)
+    content = document(composed(engine, config, None, now=NOW + timedelta(minutes=5)))
+    assert content["concept_note"]["body"] == CONCEPT_BODY
+    assert list(VALIDATOR.iter_errors(content)) == []
+    # Nor does a later attempt with a client ask again.
+    composed(engine, config, backend, now=NOW + timedelta(minutes=10))
+    assert len(concept_requests(backend)) == 1
+    assert len([c for c in table(engine, "llm_calls") if c["purpose"] == "concept_note"]) == 1
+    assert len(table(engine, "briefings")) == 1
+
+
+def test_a_recovered_answer_is_judged_like_a_fresh_one() -> None:
+    stories = [{"item_id": "i1", "story_id": "s-7", "headline": "H", "summary": "S"}]
+    good = note().model_dump_json()
+    recovered = concept.recover(good, stories, set())
+    assert recovered is not None
+    assert (recovered.key, recovered.story_id) == (KEY, 7)
+    assert concept.recover(good, stories, {KEY}) is None  # explained recently
+    assert concept.recover(good, [], set()) is None  # its story is not selected now
+    assert concept.recover(note(qualifies=False).model_dump_json(), stories, set()) is None
+    assert concept.recover(None, stories, set()) is None  # removed by retention
+    assert concept.recover("not json", stories, set()) is None
+    assert concept.recover('{"qualifies": true}', stories, set()) is None
 
 
 def test_a_budget_refusal_of_the_note_is_not_a_degraded_briefing(

@@ -11,8 +11,9 @@ text. It is not shown source text here, so the note quotes nothing and is eviden
 nothing. It never supplies a link; any address in what it writes is removed before a
 reader sees it.
 
-At most one call is made for a day. Composing the day again reuses the note already
-stored, and does not ask again when the first answer was that nothing qualified.
+At most one answered call is made for a day. Composing the day again reuses the note
+already stored. If an answer is on record with no note stored yet, that answer is judged
+again against the day's stories, and the model is not asked a second time.
 """
 
 from __future__ import annotations
@@ -112,8 +113,28 @@ def propose(
     )
     if result.status is not LLMCallStatus.SUCCEEDED or result.output is None:
         return None
-    story_of_item = {str(s["item_id"]): int(str(s["story_id"]).removeprefix("s-")) for s in stories}
-    return accept(result.output, story_of_item, recent)
+    return accept(result.output, _story_of_item(stories), recent)
+
+
+def recover(
+    answer: str | None, stories: Sequence[Mapping[str, Any]], recent: Collection[str]
+) -> ConceptNote | None:
+    """The note from an answer already paid for and stored, judged as a fresh one would be.
+
+    A run can stop after the model answered and before the briefing was stored. The answer
+    is on record with its call, so the next composition uses it and does not ask again.
+    """
+    if answer is None:
+        return None
+    try:
+        output = ConceptOutput.model_validate_json(answer)
+    except ValueError:
+        return None
+    return accept(output, _story_of_item(stories), recent)
+
+
+def _story_of_item(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    return {str(s["item_id"]): int(str(s["story_id"]).removeprefix("s-")) for s in stories}
 
 
 def standing(connection: Connection, local_date: date) -> ConceptNote | None:

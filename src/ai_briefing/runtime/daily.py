@@ -74,21 +74,22 @@ def compose_job(
         # Outside the job's transaction: a model call is never made with one open.
         with engine.connect() as connection:
             note = concept.standing(connection, local_date)
-            ask = (
-                note is None
-                and client is not None
-                and not queries.concept_asked(connection, job_run_id)
-            )
+            answered, answer = queries.concept_answer(connection, job_run_id)
+            ask = note is None and client is not None and not answered
             stories = (
                 preview_stories(
                     connection, catalogue, local_date=local_date, timezone=timezone, now=clock()
                 )
-                if ask
+                if note is None and (ask or answered)
                 else []
             )
             recent = queries.recent_concept_keys(
                 connection, local_date, concept.REPEAT_DAYS, BriefingVariant.PIPELINE
             )
+        if note is None and answered:
+            # Answered on an earlier attempt, with no note stored for the day: the answer
+            # on record is used as it would have been then. Nothing is asked again.
+            note = concept.recover(answer, stories, recent)
         if ask and client is not None:
             try:
                 note = concept.propose(client, job_run_id, stories, recent)

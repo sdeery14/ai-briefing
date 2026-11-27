@@ -440,16 +440,17 @@ def recent_concept_keys(
     return frozenset(rows.scalars())
 
 
-def concept_asked(connection: Connection, job_run_id: int) -> bool:
-    """Whether a concept-note call has already been answered under this job record."""
+def concept_answer(connection: Connection, job_run_id: int) -> tuple[bool, str | None]:
+    """Whether a concept-note call has already been answered under this job record, and
+    the stored text of the latest answer (``None`` once retention has removed it)."""
     calls = schema.llm_calls
-    return (
-        connection.execute(
-            select(calls.c.id).where(
-                calls.c.job_run_id == job_run_id,
-                calls.c.purpose == ModelTask.CONCEPT_NOTE.value,
-                calls.c.status == LLMCallStatus.SUCCEEDED.value,
-            )
-        ).first()
-        is not None
-    )
+    row = connection.execute(
+        select(calls.c.response_payload)
+        .where(
+            calls.c.job_run_id == job_run_id,
+            calls.c.purpose == ModelTask.CONCEPT_NOTE.value,
+            calls.c.status == LLMCallStatus.SUCCEEDED.value,
+        )
+        .order_by(calls.c.id.desc())
+    ).first()
+    return (False, None) if row is None else (True, row.response_payload)
