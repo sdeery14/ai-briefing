@@ -159,6 +159,7 @@ def fix_rounds_used(comments: list[dict[str, Any]], config: Config) -> int:
     return len(rounds)
 
 
+FIXABLE_SEVERITIES = frozenset({"P1", "P2", "P3"})
 FURTHER_CONDITIONS = (
     "one further fix round is allowed (ADR-014) only if you agree every remaining finding "
     "is valid, the fix is small, and the fix touches no protected path; otherwise label "
@@ -170,6 +171,12 @@ def further_round_open(used: int, max_fix_rounds: int) -> bool:
     """Whether the one further fix round of ADR-014 is still to be had: the two ordinary
     rounds are used, exactly, and the configuration has not lowered the limit."""
     return max_fix_rounds == HARD_MAX_FIX_ROUNDS and used == max_fix_rounds
+
+
+def all_tagged_for_a_fix(threads: list[dict[str, Any]]) -> bool:
+    """Whether every finding carries a P1, P2 or P3 tag (ADR-014, condition 1). A finding
+    with no tag has no known severity, so it does not qualify."""
+    return all(t.get("severity") in FIXABLE_SEVERITIES for t in threads)
 
 
 def decide(
@@ -283,7 +290,12 @@ def decide(
             why.append(f"{len(unanswered)} review finding(s) have no response")
         if fix_rounds >= max_fix_rounds:
             limit = f"fix-round limit of {max_fix_rounds} reached with work remaining: "
-            if further_round_open(fix_rounds, max_fix_rounds) and ci != "fail" and not disputed:
+            if (
+                further_round_open(fix_rounds, max_fix_rounds)
+                and ci != "fail"
+                and not disputed
+                and all_tagged_for_a_fix(unanswered)
+            ):
                 # ADR-014. What the script can see allows it; the rest is for the agent.
                 result.update(action="fix-further")
                 result["reasons"] = [*why, FURTHER_CONDITIONS]
@@ -459,6 +471,11 @@ def record_fix_round(gh: Gh, config: Config, number: int, *, further: bool = Fal
             raise LimitReached(
                 f"pull request {number} has no further fix round to use; "
                 f"label it {config.label_needs_human} and stop"
+            )
+        if not all_tagged_for_a_fix(unresolved):
+            raise LimitReached(
+                f"pull request {number} has a finding with no P1, P2 or P3 tag, so the "
+                f"further fix round does not apply; label it {config.label_needs_human} and stop"
             )
         if any(t.get("answered") for t in unresolved):
             raise LimitReached(

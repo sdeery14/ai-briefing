@@ -37,7 +37,7 @@ If any condition fails, the pull request is labelled `needs-human` as before.
 
 ### Who checks what
 
-- **The scripts** check what can be read from the pull request: the two ordinary rounds are used and the further one is not; no P0; no disputed thread; no failing required check. `round_outcome.py status` then answers `fix-further`, and `record-fix-round --further` records the round once and refuses a second.
+- **The scripts** check what can be read from the pull request: the two ordinary rounds are used and the further one is not; no P0; every remaining finding tagged P1, P2 or P3; no disputed thread; no failing required check. `round_outcome.py status` then answers `fix-further`, and `record-fix-round --further` records the round once and refuses a second.
 - **The agent** judges conditions 2, 3 and 4: that the findings are valid, the fix is small, and it stays outside the protected paths. "Small" has no line count. It means a contained correction to the code under review with its test, not a redesign. When in doubt, the agent stops.
 - **The record** is a comment on the pull request saying the further round was taken under this ADR. The round's summary to the owner names every pull request that used it.
 
@@ -63,7 +63,7 @@ The agent decides for itself that a third round is warranted, using a judgement 
 ## Acceptance checks
 
 - With two rounds used, passing checks and unanswered findings, `status` answers `fix-further` and names the conditions the agent must judge.
-- It answers `needs-human` instead when a required check is failing, a finding is disputed, the further round is already used, the count of rounds cannot be read, or the configured limit is below two.
+- It answers `needs-human` instead when a required check is failing, a finding is disputed or carries no P1, P2 or P3 tag, the further round is already used, the count of rounds cannot be read, or the configured limit is below two.
 - A P0 is escalated before any of this is considered.
 - `record-fix-round` without `--further` still refuses a third round. With it, the round is recorded once, only straight after the second, and not over a dispute or a P0.
 

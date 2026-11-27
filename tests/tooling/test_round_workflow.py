@@ -1113,6 +1113,18 @@ def test_the_further_round_is_not_offered_when_a_check_fails_or_a_finding_is_dis
     assert "fix-round limit of 2" in disputed["reasons"][0]
 
 
+def test_the_further_round_needs_a_p1_p2_or_p3_tag_on_every_finding() -> None:
+    for severity in ("P1", "P2", "P3"):
+        tagged = decide(threads=[thread(body=f"{severity} A defect.")], fix_rounds=2)
+        assert tagged["action"] == "fix-further"
+    untagged = thread("T2", body="The budget check is skipped.")
+    for threads in ([untagged], [thread(), untagged]):
+        result = decide(threads=threads, fix_rounds=2)
+        assert (result["action"], result["outcome"]) == ("label", "needs-human")
+    # In the two ordinary rounds an untagged finding is still fixed, as before.
+    assert decide(threads=[untagged], fix_rounds=1)["action"] == "fix"
+
+
 def test_a_p0_is_escalated_and_never_given_the_further_round() -> None:
     result = decide(threads=[thread(body="P0 data loss"), thread("T2")], fix_rounds=2)
     assert result["action"] == "escalate"
@@ -1327,6 +1339,14 @@ def test_the_further_fix_round_cannot_be_recorded_early_or_over_a_dispute() -> N
     with pytest.raises(round_outcome.LimitReached, match="disputed finding"):
         round_outcome.record_fix_round(disputed, CONFIG, 12, further=True)
     assert disputed.mutations == []
+
+    untagged = FakeGh(
+        comments=[marker(1), marker(2)],
+        threads=[thread(), thread("T2", body="The budget check is skipped.")],
+    )
+    with pytest.raises(round_outcome.LimitReached, match="no P1, P2 or P3 tag"):
+        round_outcome.record_fix_round(untagged, CONFIG, 12, further=True)
+    assert untagged.mutations == []
 
     critical = FakeGh(comments=[marker(1), marker(2)], threads=[p0_thread()])
     with pytest.raises(round_outcome.EscalationRequired):
