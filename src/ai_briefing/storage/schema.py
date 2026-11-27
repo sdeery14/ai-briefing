@@ -37,6 +37,7 @@ from ai_briefing.domain.enums import (
     BriefingItemKind,
     BriefingStatus,
     BriefingVariant,
+    ComparisonChoice,
     EditorialClass,
     FetchStatus,
     IntegrityStatus,
@@ -44,6 +45,7 @@ from ai_briefing.domain.enums import (
     LLMCallStatus,
     MembershipAction,
     ModelTask,
+    PresentationOrder,
     ScreeningOutcome,
     SourceKind,
     SourceMode,
@@ -327,6 +329,24 @@ briefing_items = Table(
     ),
 )
 
+comparison_judgments = Table(
+    "comparison_judgments",
+    metadata,
+    _pk(),
+    Column("local_date", Date, nullable=False),
+    Column("sequence", Integer, nullable=False),  # 1 for a day's first judgement
+    Column("pipeline_briefing_id", ForeignKey("briefings.id"), nullable=False),
+    Column("baseline_briefing_id", ForeignKey("briefings.id"), nullable=False),
+    Column("presentation_order", String(20), nullable=False),
+    Column("choice", String(20), nullable=False),
+    Column("in_force", Text, nullable=False),  # policy and prompt hashes, as JSON text
+    Column("recorded_at", UtcDateTime, nullable=False),
+    UniqueConstraint("local_date", "sequence", name="uq_comparison_judgments_sequence"),
+    _one_of("presentation_order", PresentationOrder, "presentation_order"),
+    _one_of("choice", ComparisonChoice, "choice"),
+    CheckConstraint("sequence >= 1", name="sequence_positive"),
+)
+
 llm_calls = Table(
     "llm_calls",
     metadata,
@@ -389,6 +409,7 @@ APPEND_ONLY = (
     "editorial_decisions",
     "briefings",
     "briefing_items",
+    "comparison_judgments",
 )
 # Never deleted. The only update allowed nulls the first column and sets the second,
 # changing nothing else: the retention purge.

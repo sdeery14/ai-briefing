@@ -72,3 +72,23 @@ class ConceptOutput(_Output):
     title: str
     body: str
     related_item_id: str
+
+
+class BaselineStory(_Output):
+    document_ids: list[int]
+    headline: str
+    summary: str
+    why_it_matters: str
+
+
+class BaselineWatch(_Output):
+    document_id: int
+    headline: str
+
+
+class BaselineOutput(_Output):
+    """The single-prompt digest (RFC §1.1): the day's stories and a watch list, each tied
+    to the items it came from by id. Code attaches every link."""
+
+    stories: list[BaselineStory]
+    watch: list[BaselineWatch]

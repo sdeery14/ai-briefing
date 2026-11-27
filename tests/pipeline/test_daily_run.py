@@ -549,7 +549,8 @@ def test_replay_needs_no_key_and_a_live_run_without_one_says_so(
     capsys.readouterr()
     assert cli.main(["run", *cli_day]) == 1
     assert "no API key" in capsys.readouterr().err
-    assert len(ReplayBackend(RECORDED)) == 10  # nine in processing, and the concept question
+    # Nine in processing, the concept question, and the baseline digest (issue 1.8).
+    assert len(ReplayBackend(RECORDED)) == 11
 
 
 # --- The briefing stage is a job ------------------------------------------------------------------
