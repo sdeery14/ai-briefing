@@ -13,7 +13,8 @@ reader sees it.
 
 At most one answered call is made for a day. Composing the day again reuses the note
 already stored. If an answer is on record with no note stored yet, that answer is judged
-again against the day's stories, and the model is not asked a second time.
+again against the day's stories, and the model is not asked a second time. The story it
+was about is found by the words the model was shown, not by its position in the list.
 """
 
 from __future__ import annotations
@@ -117,20 +118,42 @@ def propose(
 
 
 def recover(
-    answer: str | None, stories: Sequence[Mapping[str, Any]], recent: Collection[str]
+    answer: str | None,
+    request: str | None,
+    stories: Sequence[Mapping[str, Any]],
+    recent: Collection[str],
 ) -> ConceptNote | None:
     """The note from an answer already paid for and stored, judged as a fresh one would be.
 
     A run can stop after the model answered and before the briefing was stored. The answer
     is on record with its call, so the next composition uses it and does not ask again.
+
+    Item ids are positions in one composition, and the selection may have changed since
+    the question was asked. So the item the answer names is looked up in the stored
+    request, and the note goes to the story that carries the same headline and summary
+    now. If that story is no longer selected, or cannot be told apart, there is no note.
     """
-    if answer is None:
+    if answer is None or request is None:
         return None
     try:
         output = ConceptOutput.model_validate_json(answer)
-    except ValueError:
+        asked = json.loads(json.loads(request)["user"])["stories"]
+    except (ValueError, KeyError, TypeError):
         return None
-    return accept(output, _story_of_item(stories), recent)
+    if not isinstance(asked, list):
+        return None
+    named = [
+        (s.get("headline"), s.get("summary"))
+        for s in asked
+        if isinstance(s, dict) and s.get("item_id") == output.related_item_id
+    ]
+    if len(named) != 1:
+        return None
+    same = [s for s in stories if (s["headline"], s["summary"]) == named[0]]
+    if len(same) != 1:
+        return None
+    story_id = _story_of_item(same)[str(same[0]["item_id"])]
+    return accept(output, {output.related_item_id: story_id}, recent)
 
 
 def _story_of_item(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:

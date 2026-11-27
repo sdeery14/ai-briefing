@@ -424,18 +424,61 @@ def test_an_answer_paid_for_before_a_crash_is_used_on_the_next_attempt(
     assert len(table(engine, "briefings")) == 1
 
 
+def asked_about(stories: list[dict[str, Any]]) -> str:
+    """A stored request, as the client records it, that showed the model these stories."""
+    return json.dumps({"model": "m", "user": concept.packet(stories, set())})
+
+
 def test_a_recovered_answer_is_judged_like_a_fresh_one() -> None:
     stories = [{"item_id": "i1", "story_id": "s-7", "headline": "H", "summary": "S"}]
+    asked = asked_about(stories)
     good = note().model_dump_json()
-    recovered = concept.recover(good, stories, set())
+    recovered = concept.recover(good, asked, stories, set())
     assert recovered is not None
     assert (recovered.key, recovered.story_id) == (KEY, 7)
-    assert concept.recover(good, stories, {KEY}) is None  # explained recently
-    assert concept.recover(good, [], set()) is None  # its story is not selected now
-    assert concept.recover(note(qualifies=False).model_dump_json(), stories, set()) is None
-    assert concept.recover(None, stories, set()) is None  # removed by retention
-    assert concept.recover("not json", stories, set()) is None
-    assert concept.recover('{"qualifies": true}', stories, set()) is None
+    assert concept.recover(good, asked, stories, {KEY}) is None  # explained recently
+    assert concept.recover(good, asked, [], set()) is None  # its story is not selected now
+    declined = note(qualifies=False).model_dump_json()
+    assert concept.recover(declined, asked, stories, set()) is None
+    assert concept.recover(None, asked, stories, set()) is None  # removed by retention
+    assert concept.recover("not json", asked, stories, set()) is None
+    assert concept.recover('{"qualifies": true}', asked, stories, set()) is None
+
+
+def test_a_recovered_note_follows_its_story_when_the_ranking_has_changed() -> None:
+    seven = {"item_id": "i1", "story_id": "s-7", "headline": "Seven", "summary": "About 7"}
+    eight = {"item_id": "i2", "story_id": "s-8", "headline": "Eight", "summary": "About 8"}
+    asked = asked_about([seven, eight])
+    good = note().model_dump_json()  # names i1, which was story 7 when the model was asked
+    assert good.count('"related_item_id":"i1"') == 1
+
+    # Story 8 now ranks first, so i1 is story 8. The note stays with story 7.
+    now = [eight | {"item_id": "i1"}, seven | {"item_id": "i2"}]
+    recovered = concept.recover(good, asked, now, set())
+    assert recovered is not None
+    assert recovered.story_id == 7
+
+    # Story 7 is no longer selected: no note, and not one on whatever is first now.
+    assert concept.recover(good, asked, [eight | {"item_id": "i1"}], set()) is None
+    # Story 7 is selected but reads differently now: it is not the story that was asked about.
+    reworded = [seven | {"headline": "Seven, revised"}, eight]
+    assert concept.recover(good, asked, reworded, set()) is None
+    # Two stories carry the same words: they cannot be told apart.
+    twins = [seven, seven | {"item_id": "i2", "story_id": "s-9"}]
+    assert concept.recover(good, asked, twins, set()) is None
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [None, "not json", "[]", "{}", '{"user": "not json"}', '{"user": "{}"}', '{"user": 5}'],
+)
+def test_without_a_readable_request_a_recovered_answer_gives_no_note(
+    request_text: str | None,
+) -> None:
+    stories = [{"item_id": "i1", "story_id": "s-7", "headline": "H", "summary": "S"}]
+    assert concept.recover(note().model_dump_json(), request_text, stories, set()) is None
+    listless = json.dumps({"user": json.dumps({"stories": {"item_id": "i1"}})})
+    assert concept.recover(note().model_dump_json(), listless, stories, set()) is None
 
 
 def test_a_budget_refusal_of_the_note_is_not_a_degraded_briefing(
