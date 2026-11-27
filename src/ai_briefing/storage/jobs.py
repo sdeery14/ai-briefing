@@ -26,6 +26,7 @@ from sqlalchemy import Engine, insert, select, update
 from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import JobStatus
+from ai_briefing.runtime import tracing
 from ai_briefing.storage import schema
 
 Clock = Callable[[], datetime]
@@ -98,19 +99,21 @@ def run_job(
             job_run_id = existing.id
             connection.execute(update(runs).where(runs.c.id == job_run_id).values(**values))
     try:
-        if prepare is not None:
-            prepare(job_run_id)
-        with engine.begin() as connection:
-            counts = dict(work(connection, job_run_id) or {})
-            connection.execute(
-                update(runs)
-                .where(runs.c.id == job_run_id)
-                .values(
-                    status=JobStatus.SUCCEEDED.value,
-                    ended_at=clock(),
-                    counts=json.dumps(counts, sort_keys=True),
+        # The job's root span (ADR-009). With no tracer installed this does nothing.
+        with tracing.span("job", job=job, job_run_id=job_run_id):
+            if prepare is not None:
+                prepare(job_run_id)
+            with engine.begin() as connection:
+                counts = dict(work(connection, job_run_id) or {})
+                connection.execute(
+                    update(runs)
+                    .where(runs.c.id == job_run_id)
+                    .values(
+                        status=JobStatus.SUCCEEDED.value,
+                        ended_at=clock(),
+                        counts=json.dumps(counts, sort_keys=True),
+                    )
                 )
-            )
     except Exception as error:
         with engine.begin() as connection:
             connection.execute(

@@ -124,6 +124,7 @@ def test_each_stage_is_a_recorded_job_run(engine: Engine, config: ModelsConfig) 
         ("fetch-bodies", "fetch-bodies:2026-11-19", "succeeded"),
         ("assess", "assess:2026-11-19", "succeeded"),
         ("briefing", "briefing:2026-11-19", "succeeded"),
+        ("purge", "purge:2026-11-19", "succeeded"),
     ]
 
 
@@ -185,7 +186,7 @@ def test_a_stage_that_fails_is_recorded_and_the_later_stages_still_run(
     assert result.ok is False
     assert result.failed == {"screen": "RuntimeError"}
     # The stages after it ran, on what was already in the database.
-    assert set(result.stages) == {"collect", "fetch-bodies", "assess", "briefing"}
+    assert set(result.stages) == {"collect", "fetch-bodies", "assess", "briefing", "purge"}
     assert result.briefing_status == "empty"
     with engine.connect() as connection:
         failed = connection.execute(
@@ -210,6 +211,8 @@ def test_a_stage_that_fails_is_recorded_and_the_later_stages_still_run(
         "fetch-bodies:2026-11-19:after-failure",
         "assess:2026-11-19:after-failure",
         "briefing:2026-11-19",
+        # The purge depends on no earlier stage, so it is the day's run either way.
+        "purge:2026-11-19",
     ]
     events = [(line["event"], line.get("stage")) for line in lines]
     assert ("stage.failed", "screen") in events
@@ -229,8 +232,9 @@ def test_a_stage_that_failed_can_be_run_again_the_same_day(
     second, _ = day(engine, config)
     assert second.ok is True
     # Only collection had truly run. The stages after the failure were recorded as
-    # partial runs, so now they run properly.
-    assert second.skipped == ["collect"]
+    # partial runs, so now they run properly. The purge depends on none of them and had
+    # run too.
+    assert second.skipped == ["collect", "purge"]
     assert second.stages["fetch-bodies"]["bodies_stored"] == 1
     assert second.stages["screen"]["passed"] == 8
     assert second.stages["assess"]["assessed"] == 7
@@ -266,7 +270,7 @@ def test_log_lines_are_json_and_hold_no_article_text_model_text_or_key(
     )
     text = stream.getvalue()
     lines = text.splitlines()
-    assert len(lines) == 12  # day.start, a start and an end for each of five stages, day.done
+    assert len(lines) == 14  # day.start, a start and an end for each of six stages, day.done
     for line in lines:
         record = json.loads(line)
         assert {"ts", "event"} <= set(record)
@@ -455,6 +459,7 @@ def test_doctor_reports_a_healthy_system_after_a_day(engine: Engine, config: Mod
         "job fetch-bodies",
         "job assess",
         "job briefing",
+        "job purge",
         "budget",
     }
     assert doctor.worst(checks) == doctor.OK
