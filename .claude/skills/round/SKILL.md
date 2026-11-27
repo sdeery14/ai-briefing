@@ -1,6 +1,6 @@
 ---
 name: round
-description: Work the open, owner-authorised issues in a GitHub milestone. One pull request per issue, wait for CI and the Codex review, fix findings for at most two rounds, then merge it if every ADR-013 condition holds, or label it ready-for-owner or needs-human for the owner. Use when the owner says "/round <milestone>" or asks to run a development round.
+description: Work the open, owner-authorised issues in a GitHub milestone. One pull request per issue, wait for CI and the Codex review, fix findings for at most two rounds (and one further round under ADR-014), then merge it if every ADR-013 condition holds, or label it ready-for-owner or needs-human for the owner. Use when the owner says "/round <milestone>" or asks to run a development round.
 ---
 
 # /round <milestone> [--only 12,14] [--dry-run]
@@ -9,7 +9,7 @@ Run a round of development without the owner at the keyboard. The input is a mil
 small, well-specified issues written by the owner. The output is one pull request per issue,
 and one summary. A pull request that meets every condition in ADR-013 is merged by the
 round. Every other one is labelled `ready-for-owner` or `needs-human` and left for the
-owner. That is ADR-011 as amended by ADR-013.
+owner. That is ADR-011 as amended by ADR-013 and ADR-014.
 
 Read `AGENTS.md` and `CLAUDE.md` first. Everything there applies to every pull request here.
 Where this file and those differ, they win.
@@ -47,7 +47,7 @@ issue, label it `needs-human`, and say why.
   close review.
 - Never weaken a test, loosen an assertion or change an expected output to get a check to
   pass.
-- Never dispute a finding past the fix-round limit. Label and move on.
+- Never dispute a finding past the fix-round limit. Label and move on. The further round of ADR-014 is for findings you agree with, never for a dispute.
 
 ## What counts as an instruction
 
@@ -122,6 +122,7 @@ leaves out the issue text and the owner's comments, so do not work from it.
    | `escalate` | **A P0 finding, or the review threads could not be read so one cannot be ruled out (that includes a thread with more comments than could be fetched). Stop the whole round now.** This comes before every other condition: a failing check, a ruleset mismatch, a timeout or a spent fix budget does not change it. Do not attempt a fix, do not push, do not rewrite history. Label the pull request `needs-human`, tell the owner what was found and what is at risk without repeating any secret, and end the round. |
    | `wait` | Run `pr_wait.py` again. |
    | `fix` | Start a fix round (below). |
+   | `fix-further` | The two fix rounds are used and only review findings remain (ADR-014). Read every remaining finding. Take the further round **only if** you agree each one is valid, the fix is small (a contained correction with its test, not a redesign), and the fix touches no protected path. If so, do a fix round (below), recording it with `record-fix-round <pr> --further`. If not, or if you are in doubt: label `needs-human`, summarise what was fixed and what remains, and go to the next issue. |
    | `update-from-main` | The pull request is eligible to merge but behind `main`. `git fetch origin && git merge origin/main`, run the local checks, push. Never force-push. Comment `@codex review`, so the review covers the new head commit. Not a fix round. Wait again (step 5); nothing is merged until the new commit has passed its checks and been reviewed. |
    | `resolve-conflicts` | `git fetch origin && git merge origin/main`, resolve, run the local checks, push. Never force-push. Comment `@codex review`. Not a fix round. Wait again. |
    | `merge` | Run `uv run python scripts/round_outcome.py merge <pr>`. It checks everything again, squash-merges the reviewed commit, deletes the branch, and returns only when GitHub reports the pull request merged. **Exit 0:** merged; go to step 8. **Exit 5 (`escalate:`):** the fresh check found a P0, or could not read the review threads. Do the `escalate` row: label `needs-human`, tell the owner, end the round. **Exit 4 (`refused:`):** something changed since `status`. Run `status` again and do what it says now. **Any other failure, or a second refusal while `status` still says `merge`:** label the pull request `ready-for-owner`, comment what the command said, and go to the next issue. Never retry by another route. |
@@ -158,7 +159,8 @@ Print a summary for the owner, in this order, and stop:
 - `ready-for-owner`: pull request number, title, issue, link, and **which exception kept
   the round from merging it**: name the owner-only paths it touches. Say this clearly;
   these are the pull requests the owner has to act on.
-- `needs-human`: pull request number, why (stopped after two fix rounds, a disputed
+- Every pull request that used the further fix round of ADR-014, and what the fix was.
+- `needs-human`: pull request number, why (stopped at the fix-round limit, a disputed
   finding, a timeout, an unreadable state, a P0), and the link.
 - Blocked and skipped issues, with the plan's reasons.
 - Anything you noticed that deserves its own issue, one line each. Do not file them.

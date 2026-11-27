@@ -29,6 +29,9 @@ CONFIG_PATH = REPO_ROOT / ".claude" / "skills" / "round" / "config.json"
 
 # ADR-011: at most two fix rounds. The configuration may lower this, never raise it.
 HARD_MAX_FIX_ROUNDS = 2
+# ADR-014: one further fix round after those two, for a small fix to valid findings. It is
+# not configurable, and it is not offered when the configuration lowers the limit above.
+FURTHER_FIX_ROUNDS = 1
 
 # ADR-013: who merges.
 OWNER_ONLY = "owner-only"
