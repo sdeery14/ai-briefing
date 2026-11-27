@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import ColumnElement, and_, exists, or_, select
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.engine import Connection
 
-from ai_briefing.domain.enums import ScreeningOutcome
+from ai_briefing.domain.enums import BriefingVariant, EditorialClass, ScreeningOutcome
 from ai_briefing.domain.records import (
     DocumentObservation,
     EditorialAssessment,
@@ -152,6 +152,18 @@ def assessment_exists(
     )
 
 
+def decision_exists(connection: Connection, assessment_id: int, policy_version: str) -> bool:
+    table = schema.editorial_decisions
+    return (
+        connection.execute(
+            select(table.c.id).where(
+                table.c.assessment_id == assessment_id, table.c.policy_version == policy_version
+            )
+        ).first()
+        is not None
+    )
+
+
 def observation(connection: Connection, observation_id: int) -> DocumentObservation | None:
     return repositories.get(connection, DocumentObservation, observation_id)
 
@@ -233,5 +245,64 @@ def assessed_stories(
                 decision=decision,
                 evidence=tuple(EvidenceItem.model_validate(dict(row)) for row in items),
             )
+        )
+    return found
+
+
+@dataclass(frozen=True)
+class Briefed:
+    """A story's most recent place in an earlier day's briefing."""
+
+    local_date: date
+    final_class: EditorialClass
+    observation_ids: frozenset[int]
+    """The observations the assessment behind that place had been shown."""
+
+
+def last_briefed(
+    connection: Connection, before: date, variant: BriefingVariant
+) -> dict[int, Briefed]:
+    """For each story in a briefing for a day before ``before``: the latest such day, the
+    class the story had in it, and what the assessment behind it had been shown.
+
+    Only the newest version of each day's briefing counts: it is the day's briefing, and
+    the versions it replaced are history.
+    """
+    briefings = schema.briefings
+    items = schema.briefing_items
+    decisions = schema.editorial_decisions
+    inputs = schema.assessment_inputs
+    newest = (
+        select(briefings.c.local_date, func.max(briefings.c.version).label("version"))
+        .where(briefings.c.variant == variant.value, briefings.c.local_date < before)
+        .group_by(briefings.c.local_date)
+        .subquery()
+    )
+    rows = connection.execute(
+        select(
+            items.c.story_id,
+            briefings.c.local_date,
+            decisions.c.final_class,
+            decisions.c.assessment_id,
+        )
+        .join(briefings, briefings.c.id == items.c.briefing_id)
+        .join(
+            newest,
+            and_(
+                newest.c.local_date == briefings.c.local_date,
+                newest.c.version == briefings.c.version,
+            ),
+        )
+        .join(decisions, decisions.c.id == items.c.decision_id)
+        .where(briefings.c.variant == variant.value, items.c.story_id.is_not(None))
+        .order_by(briefings.c.local_date, items.c.position)
+    ).all()
+    found: dict[int, Briefed] = {}
+    for row in rows:  # ascending by day, so the latest day is the one kept
+        shown = connection.execute(
+            select(inputs.c.observation_id).where(inputs.c.assessment_id == row.assessment_id)
+        ).scalars()
+        found[row.story_id] = Briefed(
+            row.local_date, EditorialClass(row.final_class), frozenset(shown)
         )
     return found

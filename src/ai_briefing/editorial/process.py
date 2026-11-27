@@ -24,7 +24,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
@@ -75,9 +75,9 @@ MAX_ASSESSED_PER_RUN = 60
 # the inexpensive model's higher price applies, whatever the article's length.
 MAX_TEXT_CHARS = 40_000
 OWN_STORY_RULE = "own-story"
-# An item is news for this long after it was published (RFC §6.3). Older items are kept
-# for recognition and are not screened, fetched, assessed or briefed.
-FRESHNESS = timedelta(hours=72)
+# How long an item is news is an editorial rule, so it lives with the policy. Older items
+# are kept for recognition and are not screened, fetched, assessed or briefed.
+FRESHNESS = policy.FRESHNESS
 
 
 @dataclass(frozen=True)
@@ -581,6 +581,59 @@ def assess(
         work=work,
         clock=clock,
     )
+
+
+def redecide(connection: Connection, sources: Mapping[str, Source], *, fresh_from: datetime) -> int:
+    """Decide again each fresh story whose standing decision was made under another version
+    of the policy (RFC §6.3). Returns how many were decided.
+
+    No model is called. The facts come from stored records: the evidence items of the
+    story's current assessment, and the text that assessment was given. The earlier
+    decision is kept; the new one is added after it and is the one that stands.
+
+    Composing a briefing calls this first, in its own transaction. So a briefing is always
+    made under the policy in force when it is composed, whenever the stories in it were
+    assessed, and a policy change takes effect the next time any day is composed.
+    """
+    made = 0
+    standing = queries.assessed_stories(
+        connection, fresh_from, lambda item: current_input_hash(connection, sources, item)
+    )
+    for item in standing:
+        source = sources.get(item.document.source_id)
+        if item.decision.policy_version == policy.POLICY_VERSION or source is None:
+            continue
+        if item.assessment.id is None:
+            continue
+        if queries.decision_exists(connection, item.assessment.id, policy.POLICY_VERSION):
+            # There is one decision per assessment and policy version, and this version
+            # has made its own. A later decision under another version stands instead:
+            # versions only move forward, so that is a correction, not a stale decision.
+            continue
+        # The assessment is of the story's current input, so the text it was given is the
+        # text that would be sent now.
+        observation = best_observation(connection, source, item.document)
+        text = assessment_text(source, observation) if observation is not None else None
+        verdict = policy.decide(
+            item.assessment.suggested_class,
+            verified_supporting_evidence=sum(e.counts_as_support for e in item.evidence),
+            has_source_text=bool(text),
+            source_roles=[(item.document.source_id, item.document.source_role)],
+        )
+        repositories.add(
+            connection,
+            EditorialDecision(
+                assessment_id=item.assessment.id,
+                policy_version=policy.POLICY_VERSION,
+                final_class=verdict.final_class,
+                ceiling=verdict.ceiling,
+                ceiling_reasons=verdict.ceiling_reasons,
+                independent_source_count=verdict.independent_source_count,
+                eligible=verdict.eligible,
+            ),
+        )
+        made += 1
+    return made
 
 
 def process(
