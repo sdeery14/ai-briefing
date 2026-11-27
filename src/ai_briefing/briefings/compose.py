@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -35,6 +35,7 @@ from ai_briefing.domain.enums import (
     LLMCallStatus,
 )
 from ai_briefing.domain.records import Briefing, BriefingItem, Source
+from ai_briefing.editorial.policy import v0 as policy
 from ai_briefing.editorial.process import FRESHNESS, current_input_hash
 from ai_briefing.storage import queries, repositories, schema
 
@@ -122,6 +123,50 @@ def _why(item: queries.Assessed, draft: dict[str, str]) -> str:
     return f"{why} {note}".strip()
 
 
+def _again(item: queries.Assessed, returning: Mapping[int, str]) -> str:
+    why = returning.get(item.story.id or 0)
+    return f"; briefed before, and {why}" if why else ""
+
+
+def repetition(
+    connection: Connection, assessed: list[queries.Assessed], local_date: date
+) -> tuple[list[queries.Assessed], dict[int, str]]:
+    """Apply the repetition rule (RFC §6.3): the stories that may be in this day's briefing,
+    and, for each one that was in an earlier day's, the reason it may appear again.
+    """
+    briefed = queries.last_briefed(connection, local_date, BriefingVariant.PIPELINE)
+    allowed: list[queries.Assessed] = []
+    returning: dict[int, str] = {}
+    for item in assessed:
+        before = briefed.get(item.story.id or 0)
+        if before is None:
+            allowed.append(item)
+            continue
+        why = policy.may_appear_again(
+            briefed_class=before.final_class,
+            current_class=item.decision.final_class,
+            new_independent_evidence=_new_evidence(connection, item, before.generated_at),
+        )
+        if why is not None and item.story.id is not None:
+            allowed.append(item)
+            returning[item.story.id] = why
+    return allowed, returning
+
+
+def _new_evidence(connection: Connection, item: queries.Assessed, since: datetime) -> bool:
+    """Whether a verified quotation from a primary or independent source rests on something
+    retrieved after ``since``."""
+    if item.document.source_role not in policy.INDEPENDENT_ROLES:
+        return False
+    for evidence in item.evidence:
+        if not evidence.counts_as_support:
+            continue
+        observation = queries.observation(connection, evidence.observation_id)
+        if observation is not None and observation.retrieved_at > since:
+            return True
+    return False
+
+
 def build(
     assessed: list[queries.Assessed],
     *,
@@ -130,15 +175,36 @@ def build(
     generated_at: datetime,
     version: int,
     degraded_reasons: list[str],
+    returning: Mapping[int, str] | None = None,
 ) -> tuple[dict[str, Any], list[tuple[BriefingItemKind, queries.Assessed, str, str]]]:
-    """The briefing document, and the items in it with the reason each was included."""
+    """The briefing document, and the items in it with the reason each was included.
+
+    ``returning`` maps a story that was in an earlier day's briefing and may appear again
+    to the reason it may; that reason is stored with the item.
+    """
+    returning = returning or {}
     usable = [
         item
         for item in sorted(assessed, key=order_key)
         if item.decision.eligible and WEB_URL.fullmatch(item.document.canonical_url)
     ]
-    chosen = [i for i in usable if i.decision.final_class in STORY_CLASSES][:MAX_STORIES]
-    watching = [i for i in usable if i.decision.final_class is EditorialClass.WATCH][:MAX_WATCH]
+    chosen: list[queries.Assessed] = []
+    watching: list[queries.Assessed] = []
+    for item in usable:  # best first, so of two near-duplicates the better one is kept
+        if item.decision.final_class in STORY_CLASSES:
+            place, limit = chosen, MAX_STORIES
+        elif item.decision.final_class is EditorialClass.WATCH:
+            place, limit = watching, MAX_WATCH
+        else:
+            continue
+        if len(place) >= limit:
+            continue
+        if any(
+            policy.similar_titles(item.document.title, kept.document.title)
+            for kept in (*chosen, *watching)
+        ):
+            continue  # the same headline twice in one briefing (RFC §6.3)
+        place.append(item)
     items: list[tuple[BriefingItemKind, queries.Assessed, str, str]] = []
     stories: list[dict[str, Any]] = []
     watchlist: list[dict[str, Any]] = []
@@ -168,6 +234,7 @@ def build(
             }
         )
         reason = f"class {item.decision.final_class.value}, ranked {len(stories)} of the day"
+        reason += _again(item, returning)
         items.append((BriefingItemKind.STORY, item, headline, reason))
     for item in watching:
         headline = clip(_draft(item)["headline"] or item.document.title, HEADLINE_CHARS)
@@ -179,7 +246,8 @@ def build(
             }
         )
         why = "; ".join(item.decision.ceiling_reasons) or "suggested as watch"
-        items.append((BriefingItemKind.WATCH, item, headline, f"class watch: {why}"))
+        reason = f"class watch: {why}" + _again(item, returning)
+        items.append((BriefingItemKind.WATCH, item, headline, reason))
     if not stories and not watchlist:
         status, reasons = BriefingStatus.EMPTY, degraded_reasons
     elif degraded_reasons:
@@ -267,6 +335,7 @@ def compose(
         lambda item: current_input_hash(connection, sources, item),
     )
     assessed = [item for item in assessed if item.document.fresh_at < end]
+    assessed, returning = repetition(connection, assessed, local_date)
     reasons = [BUDGET_REASON] if _budget_refusals(connection, start, end) else []
     previous = latest_briefing(connection, local_date, BriefingVariant.PIPELINE)
     version = previous.version + 1 if previous else 1
@@ -277,6 +346,7 @@ def compose(
         generated_at=now,
         version=version,
         degraded_reasons=reasons,
+        returning=returning,
     )
     digest = stable_hash(content)
     if previous is not None and previous.content_hash == digest:

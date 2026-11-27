@@ -7,14 +7,15 @@ work finds nothing here the next time, which is what makes running it twice add 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import ColumnElement, and_, exists, or_, select
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.engine import Connection
 
-from ai_briefing.domain.enums import ScreeningOutcome
+from ai_briefing.domain.enums import BriefingVariant, EditorialClass, ScreeningOutcome
 from ai_briefing.domain.records import (
     DocumentObservation,
     EditorialAssessment,
@@ -234,4 +235,59 @@ def assessed_stories(
                 evidence=tuple(EvidenceItem.model_validate(dict(row)) for row in items),
             )
         )
+    return found
+
+
+@dataclass(frozen=True)
+class Briefed:
+    """A story's most recent place in an earlier day's briefing."""
+
+    local_date: date
+    generated_at: datetime
+    final_class: EditorialClass
+
+
+def last_briefed(
+    connection: Connection, before: date, variant: BriefingVariant
+) -> dict[int, Briefed]:
+    """For each story in a briefing for a day before ``before``: the latest such day, when
+    that briefing was generated, and the class the story had in it.
+
+    Only the newest version of each day's briefing counts: it is the day's briefing, and
+    the versions it replaced are history.
+    """
+    briefings = schema.briefings
+    items = schema.briefing_items
+    decisions = schema.editorial_decisions
+    newest = (
+        select(briefings.c.local_date, func.max(briefings.c.version).label("version"))
+        .where(briefings.c.variant == variant.value, briefings.c.local_date < before)
+        .group_by(briefings.c.local_date)
+        .subquery()
+    )
+    rows = connection.execute(
+        select(
+            items.c.story_id,
+            briefings.c.local_date,
+            briefings.c.content,
+            decisions.c.final_class,
+        )
+        .join(briefings, briefings.c.id == items.c.briefing_id)
+        .join(
+            newest,
+            and_(
+                newest.c.local_date == briefings.c.local_date,
+                newest.c.version == briefings.c.version,
+            ),
+        )
+        .join(decisions, decisions.c.id == items.c.decision_id)
+        .where(briefings.c.variant == variant.value, items.c.story_id.is_not(None))
+        .order_by(briefings.c.local_date, items.c.position)
+    ).all()
+    found: dict[int, Briefed] = {}
+    for row in rows:  # ascending by day, so the latest day is the one kept
+        generated = datetime.fromisoformat(
+            json.loads(row.content)["generated_at"].replace("Z", "+00:00")
+        )
+        found[row.story_id] = Briefed(row.local_date, generated, EditorialClass(row.final_class))
     return found
