@@ -73,19 +73,24 @@ def unscreened_documents(
 
 
 def fresh_documents(
-    connection: Connection, source_ids: list[str], limit: int, since: datetime
+    connection: Connection, source_ids: list[str], limit: int, since: datetime, before: datetime
 ) -> tuple[list[SourceDocument], int]:
-    """The fresh documents from these sources, newest first, up to ``limit``; and how many
-    there are in all. Screened or not: this is everything the day collected that is news."""
+    """The documents from these sources that are news for a day, newest first, up to
+    ``limit``; and how many there are in all. Screened or not: this is everything the day
+    collected that is fresh.
+
+    ``before`` is the end of the day. A document dated at or after it belongs to a later
+    day, however long after the day this is asked.
+    """
     documents = schema.source_documents
-    fresh = and_(documents.c.source_id.in_(source_ids), fresh_since(since))
+    dated = func.coalesce(documents.c.published_at, documents.c.first_seen_at)
+    fresh = and_(documents.c.source_id.in_(source_ids), fresh_since(since), dated < before)
     total = connection.execute(
         select(func.count()).select_from(documents).where(fresh)
     ).scalar_one()
-    newest = func.coalesce(documents.c.published_at, documents.c.first_seen_at)
     found = _documents(
         connection,
-        select(documents).where(fresh).order_by(newest.desc(), documents.c.id.desc()).limit(limit),
+        select(documents).where(fresh).order_by(dated.desc(), documents.c.id.desc()).limit(limit),
     )
     return found, int(total)
 

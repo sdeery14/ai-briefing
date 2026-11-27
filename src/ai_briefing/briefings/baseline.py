@@ -235,7 +235,7 @@ def generate(
             if attempt.existing is not None:
                 return
             documents, attempt.fresh = queries.fresh_documents(
-                connection, submittable, MAX_ITEMS, min(now, end) - FRESHNESS
+                connection, submittable, MAX_ITEMS, min(now, end) - FRESHNESS, end
             )
             earlier = queries.latest_answer(connection, job_run_id, ModelTask.BASELINE_DIGEST)
             if earlier is not None:

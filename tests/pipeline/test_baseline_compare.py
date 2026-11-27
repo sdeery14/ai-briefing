@@ -39,6 +39,7 @@ from ai_briefing.llm.pricing import Usage
 from ai_briefing.prompts import load
 from ai_briefing.runtime import cli
 from ai_briefing.runtime.daily import compose_job
+from ai_briefing.storage import repositories
 
 from .conftest import (
     CATALOGUE,
@@ -299,6 +300,70 @@ def test_only_the_newest_items_are_shown_and_the_digest_says_how_many(
     (request,) = baseline_requests(backend)
     assert len(request["documents"]) == 4
     assert content["input"] == {"documents_fresh": 9, "documents_shown": 4}
+
+
+def test_a_baseline_made_later_holds_the_days_items_and_none_from_later_days(
+    a_day: Engine, config: ModelsConfig
+) -> None:
+    # The next day's item is collected before the 19th's baseline is generated.
+    with a_day.begin() as connection:
+        later = repositories.add(
+            connection,
+            SourceDocument(
+                source_id="papers",
+                source_role=SourceRole.PRIMARY,
+                external_id="p-tomorrow",
+                canonical_url="https://papers.example.org/p-tomorrow",
+                title="A paper from the next day",
+                published_at=NOW + timedelta(days=1),
+                first_seen_at=NOW + timedelta(days=1),
+            ),
+        )
+        # One with no published time, first seen the next day, is also a later day's.
+        undated = repositories.add(
+            connection,
+            later.model_copy(
+                update={
+                    "id": None,
+                    "external_id": "p-undated",
+                    "canonical_url": "https://papers.example.org/p-undated",
+                    "published_at": None,
+                }
+            ),
+        )
+    backend = ScriptedBackend()
+    content = digest(generated(a_day, config, backend, now=NOW + timedelta(days=2)))
+    (request,) = baseline_requests(backend)
+    shown = {d["id"] for d in request["documents"]}
+    assert later.id not in shown
+    assert undated.id not in shown
+    assert len(shown) == 9
+    assert content["input"] == {"documents_fresh": 9, "documents_shown": 9}
+
+
+def test_the_newest_items_shown_are_the_days_newest_not_a_later_days(
+    a_day: Engine, config: ModelsConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with a_day.begin() as connection:
+        for number in range(6):
+            repositories.add(
+                connection,
+                SourceDocument(
+                    source_id="papers",
+                    source_role=SourceRole.PRIMARY,
+                    external_id=f"p-later-{number}",
+                    canonical_url=f"https://papers.example.org/p-later-{number}",
+                    title=f"Later paper {number}",
+                    published_at=NOW + timedelta(days=1, minutes=number),
+                    first_seen_at=NOW + timedelta(days=1),
+                ),
+            )
+    monkeypatch.setattr(baseline, "MAX_ITEMS", 4)
+    backend = ScriptedBackend()
+    generated(a_day, config, backend, now=NOW + timedelta(days=2))
+    (request,) = baseline_requests(backend)
+    assert len(request["documents"]) == 4
+    assert not any("Later paper" in str(d["title"]) for d in request["documents"])
 
 
 def test_what_code_keeps_of_an_answer() -> None:
