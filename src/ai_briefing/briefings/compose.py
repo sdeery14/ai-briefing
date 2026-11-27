@@ -36,7 +36,7 @@ from ai_briefing.domain.enums import (
 )
 from ai_briefing.domain.records import Briefing, BriefingItem, Source
 from ai_briefing.editorial.policy import v0 as policy
-from ai_briefing.editorial.process import FRESHNESS, current_input_hash
+from ai_briefing.editorial.process import FRESHNESS, current_input_hash, redecide
 from ai_briefing.storage import queries, repositories, schema
 
 SCHEMA_VERSION = "daily_briefing.v1"
@@ -63,6 +63,7 @@ class BriefingError(RuntimeError):
 class Composed:
     briefing: Briefing
     created: bool  # False when an identical version was already stored
+    redecided: int = 0  # decisions remade under the current policy version
 
 
 def without_urls(text: str) -> str:
@@ -145,7 +146,7 @@ def repetition(
         why = policy.may_appear_again(
             briefed_class=before.final_class,
             current_class=item.decision.final_class,
-            new_independent_evidence=_new_evidence(connection, item, before.generated_at),
+            new_independent_evidence=_new_evidence(item, before.observation_ids),
         )
         if why is not None and item.story.id is not None:
             allowed.append(item)
@@ -153,18 +154,19 @@ def repetition(
     return allowed, returning
 
 
-def _new_evidence(connection: Connection, item: queries.Assessed, since: datetime) -> bool:
-    """Whether a verified quotation from a primary or independent source rests on something
-    retrieved after ``since``."""
+def _new_evidence(item: queries.Assessed, already_shown: frozenset[int]) -> bool:
+    """Whether a verified quotation from a primary or independent source rests on an
+    observation the previously briefed assessment had not been shown.
+
+    Compared by observation, not by time: what counts is that the evidence is not what the
+    reader was already given.
+    """
     if item.document.source_role not in policy.INDEPENDENT_ROLES:
         return False
-    for evidence in item.evidence:
-        if not evidence.counts_as_support:
-            continue
-        observation = queries.observation(connection, evidence.observation_id)
-        if observation is not None and observation.retrieved_at > since:
-            return True
-    return False
+    return any(
+        evidence.counts_as_support and evidence.observation_id not in already_shown
+        for evidence in item.evidence
+    )
 
 
 def build(
@@ -329,6 +331,9 @@ def compose(
     # here. A briefing composed for an earlier day counts back from that day's end.
     reference = min(now, end)
     sources = {source.id: source for source in catalogue}
+    # The briefing is made under the policy in force now (RFC §6.3). Any story decided
+    # under another version is decided again first, from stored facts, with no model call.
+    redecided = redecide(connection, sources, fresh_from=reference - FRESHNESS)
     assessed = queries.assessed_stories(
         connection,
         reference - FRESHNESS,
@@ -350,7 +355,7 @@ def compose(
     )
     digest = stable_hash(content)
     if previous is not None and previous.content_hash == digest:
-        return Composed(previous, created=False)
+        return Composed(previous, created=False, redecided=redecided)
     errors = sorted(
         f"{'/'.join(str(p) for p in error.absolute_path) or '(document)'}: {error.message}"
         for error in contract_validator(load_schema(SCHEMA_VERSION)).iter_errors(content)
@@ -385,4 +390,4 @@ def compose(
                 inclusion_reason=reason,
             ),
         )
-    return Composed(briefing, created=True)
+    return Composed(briefing, created=True, redecided=redecided)

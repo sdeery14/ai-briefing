@@ -137,14 +137,32 @@ def test_a_briefed_story_returns_only_with_a_material_update(
     )
 
 
-@pytest.mark.parametrize("role", [SourceRole.VENDOR, SourceRole.COMMUNITY, SourceRole.AGGREGATOR])
-def test_only_a_primary_or_independent_source_brings_new_evidence(role: SourceRole) -> None:
-    item = assessed(1, PRACTICAL)
-    other = dataclasses.replace(
+@pytest.mark.parametrize(
+    ("role", "cited", "already_shown", "new"),
+    [
+        (SourceRole.PRIMARY, 1, {1}, False),  # the same observation the reader was given
+        (SourceRole.PRIMARY, 1, {2}, True),
+        (SourceRole.PRIMARY, 1, set(), True),
+        (SourceRole.INDEPENDENT, 1, {2}, True),
+        (SourceRole.VENDOR, 1, {2}, False),
+        (SourceRole.COMMUNITY, 1, {2}, False),
+        (SourceRole.AGGREGATOR, 1, {2}, False),
+    ],
+)
+def test_new_evidence_is_an_observation_the_reader_was_not_given_from_a_source_that_counts(
+    role: SourceRole, cited: int, already_shown: set[int], new: bool
+) -> None:
+    item = assessed(1, PRACTICAL)  # its one verified quotation cites observation 1
+    item = dataclasses.replace(
         item, document=item.document.model_copy(update={"source_role": role})
     )
-    # Decided from the role alone, before any stored record is looked at.
-    assert composing._new_evidence(None, other, NOW - timedelta(days=1)) is False  # type: ignore[arg-type]
+    assert {e.observation_id for e in item.evidence} == {cited}
+    assert composing._new_evidence(item, frozenset(already_shown)) is new
+
+
+def test_evidence_that_failed_its_check_is_not_new_evidence() -> None:
+    item = assessed(1, WATCH, verified=0)
+    assert composing._new_evidence(item, frozenset()) is False
 
 
 # "full" in full-width letters, which NFKC folds to the ordinary ones.
@@ -310,11 +328,10 @@ def test_a_briefed_story_reappears_when_new_primary_evidence_arrives(
 def test_a_new_policy_version_redecides_without_a_model_call_and_a_changed_class_returns(
     engine: Engine, config: ModelsConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    counts = run(engine, config, ScriptedBackend(), FakeTransport(SETTLED))
+    run(engine, config, ScriptedBackend(), FakeTransport(SETTLED))
     first = brief(engine, date(2026, 11, 19), NOW)
     stories_before = [s["headline"] for s in first["stories"]]
     watch_before = [w["headline"] for w in first["watchlist"]]
-    assert counts["assess"]["redecided"] == 0
     decisions_before = table(engine, "editorial_decisions")
     assessments_before = table(engine, "editorial_assessments")
     calls_before = len(table(engine, "llm_calls"))
@@ -326,9 +343,9 @@ def test_a_new_policy_version_redecides_without_a_model_call_and_a_changed_class
     monkeypatch.setattr(policy, "POLICY_VERSION", "v0.3-test")
     backend = ScriptedBackend()
     counts = run(engine, config, backend, FakeTransport(SETTLED), day="2026-11-20", now=LATER)
+    second = brief(engine, DAY_TWO, LATER)
 
     # Every standing assessment was decided again, and no model was asked anything.
-    assert counts["assess"]["redecided"] == len(assessments_before)
     assert counts["assess"]["assessed"] == 0
     assert backend.requests == []
     assert len(table(engine, "llm_calls")) == calls_before
@@ -343,21 +360,53 @@ def test_a_new_policy_version_redecides_without_a_model_call_and_a_changed_class
 
     # The stories whose class changed come back, on the watch list, and say why. The items
     # that were already watch have not changed and stay away.
-    second = brief(engine, DAY_TWO, LATER)
     assert second["stories"] == []
     assert sorted(w["headline"] for w in second["watchlist"]) == sorted(stories_before)
     assert not set(shown(second)) & set(watch_before)
     assert all(policy.CLASS_CHANGED in reason for reason in reasons(engine, second))
 
-    # Deciding again under the same version adds nothing.
-    counts = run(
-        engine,
-        config,
-        backend,
-        FakeTransport(SETTLED),
-        day="2026-11-21",
-        now=LATER + timedelta(hours=1),
-    )
-    assert counts["assess"]["redecided"] == 0
+    # Composing again under the same version decides nothing again.
+    with engine.begin() as connection:
+        again = compose(
+            connection,
+            CATALOGUE,
+            local_date=DAY_TWO,
+            timezone="UTC",
+            configuration_hash=HASH,
+            now=LATER + timedelta(hours=1),
+        )
+    assert (again.created, again.redecided) == (False, 0)
     assert len(table(engine, "editorial_decisions")) == len(decisions)
     assert backend.requests == []
+
+
+def test_a_policy_change_takes_effect_the_same_day_without_waiting_for_the_next_assessment(
+    engine: Engine, config: ModelsConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The day's assessment job has already succeeded, so it will not run again today.
+    run(engine, config, ScriptedBackend(), FakeTransport(SETTLED))
+    first = brief(engine, date(2026, 11, 19), NOW)
+    assert len(first["stories"]) == 2
+    strict = policy.Ceiling("a rule added for this test", WATCH, lambda facts: True)
+    monkeypatch.setattr(policy, "CEILINGS", (*policy.CEILINGS, strict))
+    monkeypatch.setattr(policy, "POLICY_VERSION", "v0.3-test")
+    backend = ScriptedBackend()
+    run(engine, config, backend, FakeTransport(SETTLED), now=NOW + timedelta(hours=1))
+    assert backend.requests == []  # the day's stages have run; nothing is asked again
+    assert {d["policy_version"] for d in table(engine, "editorial_decisions")} == {"v0.2"}
+    # Recomposing the same day applies the policy now in force, as a new version.
+    with engine.begin() as connection:
+        composed = compose(
+            connection,
+            CATALOGUE,
+            local_date=date(2026, 11, 19),
+            timezone="UTC",
+            configuration_hash=HASH,
+            now=NOW + timedelta(hours=1),
+        )
+    content = composed.briefing.document()
+    assert composed.created is True
+    assert composed.redecided == len(table(engine, "editorial_assessments"))
+    assert composed.briefing.version == 2
+    assert content["stories"] == []
+    assert sorted(shown(content)) == sorted(shown(first))

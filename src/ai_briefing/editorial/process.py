@@ -398,7 +398,6 @@ def assess(
         "evidence_verified": 0,
         "evidence_failed": 0,
         "citations_over_limit": 0,
-        "redecided": 0,
     }
 
     def prepare(job_run_id: int) -> None:
@@ -570,7 +569,6 @@ def assess(
                 ),
             )
             counts["assessed"] += 1
-        counts["redecided"] = redecide(connection, sources, fresh_from=clock() - FRESHNESS)
         return counts
 
     return run_job(
@@ -592,6 +590,10 @@ def redecide(connection: Connection, sources: Mapping[str, Source], *, fresh_fro
     No model is called. The facts come from stored records: the evidence items of the
     story's current assessment, and the text that assessment was given. The earlier
     decision is kept; the new one is added after it and is the one that stands.
+
+    Composing a briefing calls this first, in its own transaction. So a briefing is always
+    made under the policy in force when it is composed, whenever the stories in it were
+    assessed, and a policy change takes effect the next time any day is composed.
     """
     made = 0
     standing = queries.assessed_stories(
@@ -602,6 +604,11 @@ def redecide(connection: Connection, sources: Mapping[str, Source], *, fresh_fro
         if item.decision.policy_version == policy.POLICY_VERSION or source is None:
             continue
         if item.assessment.id is None:
+            continue
+        if queries.decision_exists(connection, item.assessment.id, policy.POLICY_VERSION):
+            # There is one decision per assessment and policy version, and this version
+            # has made its own. A later decision under another version stands instead:
+            # versions only move forward, so that is a correction, not a stale decision.
             continue
         # The assessment is of the story's current input, so the text it was given is the
         # text that would be sent now.
