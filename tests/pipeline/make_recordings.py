@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ai_briefing.briefings.baseline import generate
 from ai_briefing.llm.backends import ModelRequest, ModelResponse, recording
 from ai_briefing.llm.client import ModelClient
 from ai_briefing.llm.config import load_models_config
@@ -70,6 +71,17 @@ def main() -> int:
                 ),
                 clock=lambda: NOW,
             )
+            # The baseline digest is one more call, over the same day's items.
+            generate(
+                engine,
+                CATALOGUE,
+                ModelClient(engine=engine, config=config, backend=recorder, clock=lambda: NOW),
+                local_date=date.fromisoformat(DAY),
+                timezone="UTC",
+                application_version="0.0.0",
+                configuration_hash=HASH,
+                clock=lambda: NOW,
+            )
         finally:
             engine.dispose()
     RECORDED.mkdir(exist_ok=True)
@@ -79,6 +91,8 @@ def main() -> int:
         kind = "screening" if '"items"' in request.user else "assessment"
         if '"recently_explained"' in request.user:
             kind = "concept_note"
+        if '"documents"' in request.user:
+            kind = "baseline_digest"
         entry = {"_note": NOTE, **recording(request, response)}
         path = RECORDED / f"{number:02d}_{kind}.json"
         path.write_text(

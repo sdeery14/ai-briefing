@@ -324,11 +324,44 @@ def _concept(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _baseline(payload: dict[str, Any]) -> dict[str, Any]:
+    """A digest of the synthetic day in one answer: the sound paper and the release as
+    stories, the headline-only item to watch. It also names a document it was never shown
+    and writes an address, both of which code must drop."""
+    by_title = {str(d["title"]): int(d["id"]) for d in payload["documents"]}
+
+    def find(words: str) -> list[int]:
+        return [i for title, i in by_title.items() if words in title]
+
+    stories = []
+    for words, summary in (
+        ("sound paper", "A retrieval method is evaluated on three public datasets."),
+        ("version 2 released", "Version 2 of a library is out. See https://evil.example.com/x"),
+    ):
+        ids = find(words)
+        if ids:
+            stories.append(
+                {
+                    "document_ids": [*ids, 99999],
+                    "headline": f"Baseline: {words}",
+                    "summary": summary,
+                    "why_it_matters": "It may be useful in everyday work.",
+                }
+            )
+    watch = [
+        {"document_id": i, "headline": "Baseline: known only by a headline"}
+        for i in find("known only by its headline")
+    ]
+    return {"stories": stories, "watch": [*watch, {"document_id": 99999, "headline": "Invented"}]}
+
+
 def scripted(request: ModelRequest) -> ModelResponse:
     """A deterministic stand-in for the model: its answer depends only on the request."""
     payload = json.loads(request.user)
     if "stories" in payload:
         answer = _concept(payload)
+    elif "documents" in payload:
+        answer = _baseline(payload)
     else:
         answer = _screen(payload) if "items" in payload else _assess(payload)
     text = json.dumps(answer, ensure_ascii=False)

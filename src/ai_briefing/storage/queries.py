@@ -27,6 +27,7 @@ from ai_briefing.domain.enums import (
     SourceRole,
 )
 from ai_briefing.domain.records import (
+    ComparisonJudgment,
     DocumentObservation,
     EditorialAssessment,
     EditorialDecision,
@@ -69,6 +70,65 @@ def unscreened_documents(
         .order_by(documents.c.id)
         .limit(limit),
     )
+
+
+def fresh_documents(
+    connection: Connection, source_ids: list[str], limit: int, since: datetime
+) -> tuple[list[SourceDocument], int]:
+    """The fresh documents from these sources, newest first, up to ``limit``; and how many
+    there are in all. Screened or not: this is everything the day collected that is news."""
+    documents = schema.source_documents
+    fresh = and_(documents.c.source_id.in_(source_ids), fresh_since(since))
+    total = connection.execute(
+        select(func.count()).select_from(documents).where(fresh)
+    ).scalar_one()
+    newest = func.coalesce(documents.c.published_at, documents.c.first_seen_at)
+    found = _documents(
+        connection,
+        select(documents).where(fresh).order_by(newest.desc(), documents.c.id.desc()).limit(limit),
+    )
+    return found, int(total)
+
+
+def documents_by_id(connection: Connection, ids: Sequence[int]) -> dict[int, SourceDocument]:
+    """The stored documents with these ids, by id."""
+    if not ids:
+        return {}
+    documents = schema.source_documents
+    found = _documents(connection, select(documents).where(documents.c.id.in_(list(ids))))
+    return {d.id: d for d in found if d.id is not None}
+
+
+def latest_answer(
+    connection: Connection, job_run_id: int, task: ModelTask
+) -> tuple[str | None, str | None] | None:
+    """The stored answer and request of the latest answered call for ``task`` under this
+    job record, or ``None`` if there is none. Either text is ``None`` once retention has
+    removed it."""
+    calls = schema.llm_calls
+    row = connection.execute(
+        select(calls.c.response_payload, calls.c.request_payload)
+        .where(
+            calls.c.job_run_id == job_run_id,
+            calls.c.purpose == task.value,
+            calls.c.status == LLMCallStatus.SUCCEEDED.value,
+        )
+        .order_by(calls.c.id.desc())
+    ).first()
+    return None if row is None else (row.response_payload, row.request_payload)
+
+
+def comparison_judgments(connection: Connection, local_date: date) -> list[ComparisonJudgment]:
+    """The blind-comparison judgements recorded for a day, in the order they were made."""
+    table = schema.comparison_judgments
+    rows = (
+        connection.execute(
+            select(table).where(table.c.local_date == local_date).order_by(table.c.sequence)
+        )
+        .mappings()
+        .all()
+    )
+    return [ComparisonJudgment.model_validate(dict(row)) for row in rows]
 
 
 def screening_relevance(connection: Connection) -> dict[int, int]:

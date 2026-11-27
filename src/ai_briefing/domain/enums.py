@@ -170,6 +170,22 @@ class BriefingItemKind(StrEnum):
     CONCEPT_NOTE = "concept_note"
 
 
+class PresentationOrder(StrEnum):
+    """Which briefing a blind comparison showed first (ADR-007). Hidden from the reader
+    until the choice is stored."""
+
+    PIPELINE_FIRST = "pipeline_first"
+    BASELINE_FIRST = "baseline_first"
+
+
+class ComparisonChoice(StrEnum):
+    """What the reader preferred, in terms of what they saw: the first or the second."""
+
+    FIRST = "first"
+    SECOND = "second"
+    NO_PREFERENCE = "no_preference"
+
+
 # --- Model calls and jobs (config/models.yaml, RFC §7, ADR-009) ----------------------------
 
 

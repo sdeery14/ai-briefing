@@ -41,6 +41,7 @@ from ai_briefing.domain.enums import (
     BriefingItemKind,
     BriefingStatus,
     BriefingVariant,
+    ComparisonChoice,
     EditorialClass,
     FetchStatus,
     IntegrityStatus,
@@ -49,6 +50,7 @@ from ai_briefing.domain.enums import (
     MembershipAction,
     ModelSubmission,
     ModelTask,
+    PresentationOrder,
     ScreeningOutcome,
     SourceKind,
     SourceMode,
@@ -479,6 +481,43 @@ class BriefingItem(Record):
         ):
             raise ValueError("a story or watch item names its story and its decision")
         return self
+
+
+class ComparisonJudgment(Record):
+    """The reader's preference between a day's pipeline briefing and its baseline digest,
+    shown unlabelled (ADR-007, RFC §5).
+
+    The choice is recorded as what the reader saw, first or second. ``presentation_order``
+    says which was which and was not shown. ``in_force`` is JSON text naming the policy
+    version and the hashes of the policy and of every prompt at the time.
+    """
+
+    id: RecordId | None = None
+    local_date: date
+    sequence: int = Field(ge=1)
+    pipeline_briefing_id: RecordId
+    baseline_briefing_id: RecordId
+    presentation_order: PresentationOrder
+    choice: ComparisonChoice
+    in_force: NonEmptyStr
+    recorded_at: UtcDatetime
+
+    @field_validator("in_force")
+    @classmethod
+    def _in_force_is_a_json_object(cls, value: str) -> str:
+        _JSON_OBJECT.validate_json(value)
+        return value
+
+    @property
+    def preferred(self) -> BriefingVariant | None:
+        """The variant the reader preferred, or ``None`` for no preference."""
+        if self.choice is ComparisonChoice.NO_PREFERENCE:
+            return None
+        pipeline_first = self.presentation_order is PresentationOrder.PIPELINE_FIRST
+        chose_first = self.choice is ComparisonChoice.FIRST
+        return (
+            BriefingVariant.PIPELINE if pipeline_first == chose_first else BriefingVariant.BASELINE
+        )
 
 
 # --- Model calls and jobs ------------------------------------------------------------------

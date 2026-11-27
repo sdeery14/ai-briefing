@@ -93,6 +93,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="where to write (default: AI_BRIEFING_EXPORT_DIR, else export/ beside the database)",
     )
 
+    baseline = commands.add_parser(
+        "baseline", help="the single-prompt digest the briefing is compared with"
+    )
+    baseline_commands = baseline.add_subparsers(
+        dest="baseline_command", metavar="action", required=True
+    )
+    digest = baseline_commands.add_parser(
+        "generate", help="generate and store a day's baseline digest (one model call)"
+    )
+    digest.add_argument("--date", help="the local date of the digest (default: today)")
+    digest.add_argument("--timezone", help=TIMEZONE_HELP)
+    digest.add_argument("--database", help=DATABASE_HELP)
+    digest.add_argument(
+        "--replay",
+        metavar="DIR",
+        help="answer the model call from recorded responses in DIR; uses no API key",
+    )
+
+    compare = commands.add_parser(
+        "compare",
+        help="show a day's briefing and baseline unlabelled, and record which you prefer",
+    )
+    compare.add_argument("--date", help="the local date to compare (default: today)")
+    compare.add_argument("--timezone", help=TIMEZONE_HELP)
+    compare.add_argument("--database", help=DATABASE_HELP)
+    compare.add_argument(
+        "--again",
+        action="store_true",
+        help="record another preference for a day that already has one",
+    )
+
     run = commands.add_parser(
         "run", help="run the day's jobs in order: collect, process, compose the briefing"
     )
@@ -398,6 +429,124 @@ def _briefing_export(
     return 0
 
 
+def _baseline_generate(
+    database: str | None, date_text: str | None, timezone_text: str | None, replay: str | None
+) -> int:
+    from pathlib import Path
+
+    from ai_briefing.briefings.baseline import generate
+    from ai_briefing.llm.backends import AnthropicBackend, Backend, ReplayBackend
+    from ai_briefing.llm.client import ModelClient
+    from ai_briefing.llm.config import ModelsConfigError, load_models_config
+    from ai_briefing.llm.credentials import MissingApiKey, load_api_key
+    from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
+    from ai_briefing.storage import database as storage
+    from ai_briefing.storage.lock import LockHeld, job_lock
+
+    path = storage.database_path(database)
+    try:
+        day, timezone = _day(date_text, timezone_text)
+        catalogue = load_catalogue()
+        config = load_models_config()
+        backend: Backend
+        if replay is not None:
+            backend = ReplayBackend(Path(replay))
+        else:
+            key = load_api_key(config.provider.api_key_env)
+            backend = AnthropicBackend(key, api_version=config.provider.api_version)
+        if not path.is_file():
+            raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
+        with job_lock(path):
+            engine = storage.create_database_engine(path)
+            try:
+                if storage.current_revision(engine) != storage.head_revision():
+                    raise storage.StorageError(
+                        f"{path} is not at the current schema; run `ai-briefing db upgrade`"
+                    )
+                generated = generate(
+                    engine,
+                    catalogue,
+                    ModelClient(engine=engine, config=config, backend=backend, clock=current_time),
+                    local_date=day,
+                    timezone=timezone,
+                    application_version=__version__,
+                    configuration_hash=_configuration_hash(),
+                    clock=current_time,
+                )
+            finally:
+                engine.dispose()
+    except (
+        CatalogueError,
+        ModelsConfigError,
+        MissingApiKey,
+        LockHeld,
+        storage.StorageError,
+        ValueError,
+        OSError,
+    ) as error:
+        return _fail(error)
+    # The digest itself is not printed: reading it here would spoil the blind comparison.
+    summary: dict[str, object] = {"day": day.isoformat(), "created": generated.created}
+    if generated.briefing is None:
+        summary["stored"] = False
+        summary["reason"] = generated.reason
+        sys.stdout.write(json.dumps(summary, sort_keys=True) + "\n")
+        return 2
+    content = generated.briefing.document()
+    summary["stored"] = True
+    summary["status"] = generated.briefing.status.value
+    summary["input"] = content.get("input")
+    sys.stdout.write(json.dumps(summary, sort_keys=True) + "\n")
+    return 0
+
+
+def _compare(
+    database: str | None, date_text: str | None, timezone_text: str | None, again: bool
+) -> int:
+    from ai_briefing.evaluation.comparison import ComparisonError, compare
+    from ai_briefing.storage import database as storage
+    from ai_briefing.storage.lock import LockHeld, job_lock
+
+    def show(text: str) -> None:
+        sys.stdout.write(text + "\n" + "=" * 72 + "\n\n")
+
+    def ask(question: str) -> str:
+        sys.stdout.write(question)
+        sys.stdout.flush()
+        return sys.stdin.readline()
+
+    path = storage.database_path(database)
+    try:
+        day, _timezone = _day(date_text, timezone_text)
+        if not path.is_file():
+            raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
+        engine = storage.create_database_engine(path)
+        try:
+            if storage.current_revision(engine) != storage.head_revision():
+                raise storage.StorageError(
+                    f"{path} is not at the current schema; run `ai-briefing db upgrade`"
+                )
+            judgment = compare(
+                engine,
+                local_date=day,
+                show=show,
+                ask=ask,
+                again=again,
+                # The lock is held for the one write, not while you read.
+                writing=lambda: job_lock(path),
+                clock=current_time,
+            )
+        finally:
+            engine.dispose()
+    except (ComparisonError, LockHeld, storage.StorageError, ValueError, OSError) as error:
+        return _fail(error)
+    # Which was which is stored, and is not shown: knowing it would colour later days.
+    sys.stdout.write(
+        f"Recorded your preference for {day.isoformat()} (judgement {judgment.sequence}).\n"
+    )
+    return 0
+
+
 def _run_day(
     database: str | None, date_text: str | None, timezone_text: str | None, replay: str | None
 ) -> int:
@@ -587,6 +736,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _briefing_generate(args.database, args.date, args.timezone, args.format)
     if args.command == "briefing" and args.briefing_command == "export":
         return _briefing_export(args.database, args.date, args.timezone, args.output_dir)
+    if args.command == "baseline" and args.baseline_command == "generate":
+        return _baseline_generate(args.database, args.date, args.timezone, args.replay)
+    if args.command == "compare":
+        return _compare(args.database, args.date, args.timezone, args.again)
     if args.command == "run":
         return _run_day(args.database, args.date, args.timezone, args.replay)
     if args.command == "doctor":

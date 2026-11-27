@@ -461,4 +461,4 @@ def test_a_document_needs_a_source_that_exists(engine: Engine) -> None:
 def test_evidence_and_briefing_types_are_the_ones_stored() -> None:
     stored = set(repositories._STORED)
     assert {EvidenceItem, Briefing, JobRun, LLMCall} <= stored
-    assert len(stored) == 12
+    assert len(stored) == 13

@@ -19,12 +19,14 @@ from ai_briefing.domain.enums import (
     BriefingItemKind,
     BriefingStatus,
     BriefingVariant,
+    ComparisonChoice,
     EditorialClass,
     FetchStatus,
     IntegrityStatus,
     LLMCallStatus,
     MembershipAction,
     ModelTask,
+    PresentationOrder,
     ScreeningOutcome,
     SourceRole,
     SupportType,
@@ -32,6 +34,7 @@ from ai_briefing.domain.enums import (
 from ai_briefing.domain.records import (
     Briefing,
     BriefingItem,
+    ComparisonJudgment,
     DimensionScores,
     DocumentObservation,
     EditorialAssessment,
@@ -269,6 +272,31 @@ def _add_rest(connection: Connection, source_id: str, call: LLMCall, external_id
             decision_id=decision.id,
             text="Headline",
             inclusion_reason="class practical, ranked first",
+        ),
+    )
+    # The day's baseline digest, and the reader's blind preference between the two.
+    baseline = add(
+        connection,
+        briefing.model_copy(
+            update={
+                "id": None,
+                "variant": BriefingVariant.BASELINE,
+                "content": '{"schema_version": "baseline_digest.v1", "stories": []}',
+            }
+        ),
+    )
+    assert baseline.id is not None
+    add(
+        connection,
+        ComparisonJudgment(
+            local_date=briefing.local_date,
+            sequence=briefing.version,
+            pipeline_briefing_id=briefing.id,
+            baseline_briefing_id=baseline.id,
+            presentation_order=PresentationOrder.BASELINE_FIRST,
+            choice=ComparisonChoice.SECOND,
+            in_force='{"policy_version": "v0"}',
+            recorded_at=NOW,
         ),
     )
     return Chain(

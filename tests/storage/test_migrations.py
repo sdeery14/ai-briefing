@@ -18,8 +18,9 @@ from ai_briefing.storage import database, schema
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO_ROOT / "migrations"
 FIRST = "0001_first_schema"
-HEAD = "0002_screening_decisions"
-REVISIONS = (FIRST, HEAD)
+SECOND = "0002_screening_decisions"
+HEAD = "0003_comparison_judgments"
+REVISIONS = (FIRST, SECOND, HEAD)
 
 
 def tables(engine: Engine) -> set[str]:
@@ -91,8 +92,11 @@ def test_each_migration_can_be_undone_one_step_at_a_time(empty_engine: Engine) -
         database.downgrade(empty_engine, revision)
         assert database.current_revision(empty_engine) == revision
     assert "screening_decisions" not in tables(empty_engine)
+    assert "comparison_judgments" not in tables(empty_engine)
     assert "source_documents" in tables(empty_engine)
-    assert not [name for name in triggers(empty_engine) if name.startswith("screening_")]
+    assert not [
+        name for name in triggers(empty_engine) if name.startswith(("screening_", "comparison_"))
+    ]
     database.upgrade(empty_engine)
     assert database.current_revision(empty_engine) == HEAD
 

@@ -31,6 +31,7 @@ from ai_briefing.domain.records import (
     AssessmentInput,
     Briefing,
     BriefingItem,
+    ComparisonJudgment,
     DimensionScores,
     DocumentObservation,
     EditorialAssessment,
@@ -118,6 +119,7 @@ _STORED: dict[
     EditorialDecision: (schema.editorial_decisions, _decision_to_row, _decision_from_row),
     Briefing: (schema.briefings, _columns, dict),
     BriefingItem: (schema.briefing_items, _columns, dict),
+    ComparisonJudgment: (schema.comparison_judgments, _columns, dict),
     LLMCall: (schema.llm_calls, _columns, _call_from_row),
     JobRun: (schema.job_runs, _columns, _job_from_row),
 }
