@@ -15,14 +15,21 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ai_briefing.llm.backends import ModelRequest, ModelResponse, recording
+from ai_briefing.llm.client import ModelClient
 from ai_briefing.llm.config import load_models_config
+from ai_briefing.runtime.daily import compose_job
 from ai_briefing.storage import database
 from pipeline.conftest import (
+    CATALOGUE,
+    DAY,
+    HASH,
+    NOW,
     RECORDED,
     FakeTransport,
     run_day,
@@ -48,7 +55,21 @@ def main() -> int:
         engine = database.create_database_engine(Path(folder) / "record.sqlite3")
         try:
             database.upgrade(engine)
-            run_day(engine, load_models_config(), recorder, FakeTransport())
+            config = load_models_config()
+            run_day(engine, config, recorder, FakeTransport())
+            # Composing asks once whether a story needs a concept explained.
+            compose_job(
+                engine,
+                CATALOGUE,
+                local_date=date.fromisoformat(DAY),
+                timezone="UTC",
+                application_version="0.0.0",
+                configuration_hash=HASH,
+                client=ModelClient(
+                    engine=engine, config=config, backend=recorder, clock=lambda: NOW
+                ),
+                clock=lambda: NOW,
+            )
         finally:
             engine.dispose()
     RECORDED.mkdir(exist_ok=True)
@@ -56,6 +77,8 @@ def main() -> int:
         old.unlink()
     for number, (request, response) in enumerate(recorder.seen, start=1):
         kind = "screening" if '"items"' in request.user else "assessment"
+        if '"recently_explained"' in request.user:
+            kind = "concept_note"
         entry = {"_note": NOTE, **recording(request, response)}
         path = RECORDED / f"{number:02d}_{kind}.json"
         path.write_text(

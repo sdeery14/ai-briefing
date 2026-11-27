@@ -61,3 +61,14 @@ class AssessmentOutput(_Output):
     headline: str
     summary: str
     why_it_matters: str
+
+
+class ConceptOutput(_Output):
+    """Whether one of the day's stories needs a concept explained, and the note if so
+    (RFC §6.4). The fields other than ``qualifies`` are empty when nothing qualifies."""
+
+    qualifies: bool
+    concept: str
+    title: str
+    body: str
+    related_item_id: str

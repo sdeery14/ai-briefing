@@ -7,16 +7,21 @@ work finds nothing here the next time, which is what makes running it twice add 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import (
+    BriefingItemKind,
     BriefingVariant,
     EditorialClass,
+    LLMCallStatus,
+    ModelTask,
     ScreeningOutcome,
     SourceKind,
     SourceRole,
@@ -386,3 +391,65 @@ def last_briefed(
             row.local_date, EditorialClass(row.final_class), frozenset(shown)
         )
     return found
+
+
+def latest_concept_note(
+    connection: Connection, local_date: date, variant: BriefingVariant
+) -> tuple[dict[str, Any], str] | None:
+    """The latest stored briefing for a day and the concept key of its note, if it has one."""
+    briefings = schema.briefings
+    items = schema.briefing_items
+    row = connection.execute(
+        select(briefings.c.id, briefings.c.content)
+        .where(briefings.c.local_date == local_date, briefings.c.variant == variant.value)
+        .order_by(briefings.c.version.desc())
+    ).first()
+    if row is None:
+        return None
+    key = connection.execute(
+        select(items.c.text).where(
+            items.c.briefing_id == row.id,
+            items.c.kind == BriefingItemKind.CONCEPT_NOTE.value,
+        )
+    ).scalar()
+    if key is None:
+        return None
+    content: dict[str, Any] = json.loads(row.content)
+    return content, key
+
+
+def recent_concept_keys(
+    connection: Connection, local_date: date, days: int, variant: BriefingVariant
+) -> frozenset[str]:
+    """The concepts explained in any briefing version for another day within ``days`` of
+    this one. The day's own earlier versions are not counted: composing a day again is
+    not a repeat."""
+    briefings = schema.briefings
+    items = schema.briefing_items
+    rows = connection.execute(
+        select(items.c.text)
+        .join(briefings, briefings.c.id == items.c.briefing_id)
+        .where(
+            items.c.kind == BriefingItemKind.CONCEPT_NOTE.value,
+            briefings.c.variant == variant.value,
+            briefings.c.local_date != local_date,
+            briefings.c.local_date >= local_date - timedelta(days=days),
+            briefings.c.local_date <= local_date + timedelta(days=days),
+        )
+    )
+    return frozenset(rows.scalars())
+
+
+def concept_asked(connection: Connection, job_run_id: int) -> bool:
+    """Whether a concept-note call has already been answered under this job record."""
+    calls = schema.llm_calls
+    return (
+        connection.execute(
+            select(calls.c.id).where(
+                calls.c.job_run_id == job_run_id,
+                calls.c.purpose == ModelTask.CONCEPT_NOTE.value,
+                calls.c.status == LLMCallStatus.SUCCEEDED.value,
+            )
+        ).first()
+        is not None
+    )

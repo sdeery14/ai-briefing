@@ -143,7 +143,10 @@ def test_the_recordings_are_exactly_what_the_script_answers(
     backend = ScriptedBackend()
     run_day(engine, config, backend, FakeTransport())
     replay = ReplayBackend(RECORDED)
-    assert len(replay) == len(backend.requests) == 9
+    # Nine calls in processing, and one more recorded when the briefing is composed: the
+    # question of whether a story needs a concept explained (issue 1.11).
+    assert len(backend.requests) == 9
+    assert len(replay) == 10
     for request in backend.requests:
         assert replay.create(request) == scripted(request)
     for path in RECORDED.glob("*.json"):

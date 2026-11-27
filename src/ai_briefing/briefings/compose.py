@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from ai_briefing.briefings.concept import ConceptNote
 from ai_briefing.briefings.contract import contract_validator, load_schema
 from ai_briefing.domain.enums import (
     BriefingItemKind,
@@ -52,6 +53,8 @@ SUMMARY_CHARS = 800
 WHY_CHARS = 600
 UNCERTAINTY_CHARS = 250
 TITLE_CHARS = 300
+CONCEPT_TITLE_CHARS = 120
+CONCEPT_BODY_CHARS = 1200
 SOURCE_NAME_CHARS = 100
 WEB_URL = re.compile(r'^https?://[^\s<>"]+$')
 ANY_URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -235,11 +238,15 @@ def build(
     version: int,
     degraded_reasons: list[str],
     returning: Mapping[int, str] | None = None,
+    concept: ConceptNote | None = None,
 ) -> tuple[dict[str, Any], list[tuple[BriefingItemKind, queries.Assessed, str, str]]]:
     """The briefing document, and the items in it with the reason each was included.
 
     ``returning`` maps a story that was in an earlier day's briefing and may appear again
     to the reason it may; that reason is stored with the item.
+
+    ``concept`` is a background note. It is attached only if the story it belongs to is
+    one of the stories chosen here.
     """
     returning = returning or {}
     usable = [
@@ -306,7 +313,7 @@ def build(
         status, reasons = BriefingStatus.DEGRADED, degraded_reasons
     else:
         status, reasons = BriefingStatus.READY, []
-    content = {
+    content: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "briefing_id": f"b-{local_date.isoformat()}-{version}",
         "local_date": local_date.isoformat(),
@@ -318,6 +325,22 @@ def build(
         "stories": stories,
         "watchlist": watchlist,
     }
+    if concept is not None:
+        for story, item in zip(stories, chosen, strict=True):
+            # The words are the model's. Any address in them is removed, and they are cut
+            # to the contract's limits.
+            title = clip(without_urls(concept.title), CONCEPT_TITLE_CHARS)
+            body = clip(without_urls(concept.body), CONCEPT_BODY_CHARS)
+            if item.story.id != concept.story_id or not title or not body or not concept.key:
+                continue
+            content["concept_note"] = {
+                "title": title,
+                "body": body,
+                "related_item_id": story["item_id"],
+            }
+            reason = f"background written by the model for {story['item_id']}: {title}"
+            items.append((BriefingItemKind.CONCEPT_NOTE, item, concept.key, reason))
+            break
     return content, items
 
 
@@ -363,6 +386,56 @@ def latest_briefing(
     return None if row is None else Briefing.model_validate(dict(row))
 
 
+def _selectable(
+    connection: Connection,
+    catalogue: Sequence[Source],
+    *,
+    local_date: date,
+    timezone: str,
+    now: datetime,
+) -> tuple[list[queries.Assessed], dict[int, str]]:
+    """The stories that may be in the day's briefing, and why any returning one may."""
+    _start, end = day_bounds(local_date, timezone)
+    # The same clock as processing: an item is news for FRESHNESS after it was published,
+    # counted back from now. So anything processing just paid to assess is still fresh
+    # here. A briefing composed for an earlier day counts back from that day's end.
+    reference = min(now, end)
+    sources = {source.id: source for source in catalogue}
+    assessed = queries.assessed_stories(
+        connection,
+        reference - FRESHNESS,
+        lambda item: current_input_hash(connection, sources, item),
+    )
+    assessed = [item for item in assessed if item.fresh_at < end]
+    return repetition(connection, assessed, local_date)
+
+
+def preview_stories(
+    connection: Connection,
+    catalogue: Sequence[Source],
+    *,
+    local_date: date,
+    timezone: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """The stories the day's briefing would hold now, as it would word them. Reads only:
+    nothing is decided again and nothing is stored."""
+    assessed, returning = _selectable(
+        connection, catalogue, local_date=local_date, timezone=timezone, now=now
+    )
+    content, _ = build(
+        assessed,
+        local_date=local_date,
+        timezone=timezone,
+        generated_at=now,
+        version=1,
+        degraded_reasons=[],
+        returning=returning,
+    )
+    stories: list[dict[str, Any]] = content["stories"]
+    return stories
+
+
 def compose(
     connection: Connection,
     catalogue: Sequence[Source],
@@ -371,26 +444,22 @@ def compose(
     timezone: str,
     configuration_hash: str,
     now: datetime,
+    concept: ConceptNote | None = None,
 ) -> Composed:
     """Compose the pipeline briefing for a day and store it as a new version if it differs
     from the latest. The caller's transaction holds all of it.
+
+    ``concept`` is a background note proposed for the day. It is attached only if its
+    story is selected.
     """
     start, end = day_bounds(local_date, timezone)
-    # The same clock as processing: an item is news for FRESHNESS after it was published,
-    # counted back from now. So anything processing just paid to assess is still fresh
-    # here. A briefing composed for an earlier day counts back from that day's end.
-    reference = min(now, end)
     sources = {source.id: source for source in catalogue}
     # The briefing is made under the policy in force now (RFC §6.3). Any story decided
     # under another version is decided again first, from stored facts, with no model call.
-    redecided = redecide(connection, sources, fresh_from=reference - FRESHNESS)
-    assessed = queries.assessed_stories(
-        connection,
-        reference - FRESHNESS,
-        lambda item: current_input_hash(connection, sources, item),
+    redecided = redecide(connection, sources, fresh_from=min(now, end) - FRESHNESS)
+    assessed, returning = _selectable(
+        connection, catalogue, local_date=local_date, timezone=timezone, now=now
     )
-    assessed = [item for item in assessed if item.fresh_at < end]
-    assessed, returning = repetition(connection, assessed, local_date)
     reasons = [BUDGET_REASON] if _budget_refusals(connection, start, end) else []
     previous = latest_briefing(connection, local_date, BriefingVariant.PIPELINE)
     version = previous.version + 1 if previous else 1
@@ -402,6 +471,7 @@ def compose(
         version=version,
         degraded_reasons=reasons,
         returning=returning,
+        concept=concept,
     )
     digest = stable_hash(content)
     if previous is not None and previous.content_hash == digest:

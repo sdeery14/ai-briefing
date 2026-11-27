@@ -70,6 +70,27 @@ def to_markdown(content: dict[str, Any]) -> str:
         for item in content["watchlist"]:
             lines.append(f"- {link(item['headline'], item['url'])}")
         lines.append("")
+    note = content.get("concept_note")
+    if note:
+        related = next(
+            (
+                s["headline"]
+                for s in content.get("stories", [])
+                if s["item_id"] == note["related_item_id"]
+            ),
+            None,
+        )
+        lines += [
+            f"## Background: {escape(note['title'])}",
+            "",
+            "*Background written by the model. It is not taken from a source and is not "
+            "evidence for anything above.*",
+            "",
+            escape(note["body"]),
+            "",
+        ]
+        if related:
+            lines += [f"Related to: {escape(related)}", ""]
     lines += [
         "---",
         "",
