@@ -482,6 +482,15 @@ def record_fix_round(gh: Gh, config: Config, number: int, *, further: bool = Fal
                 f"pull request {number} has a disputed finding, so the further fix round "
                 f"does not apply; label it {config.label_needs_human} and stop"
             )
+        # Everything is read afresh, required checks included: the round is recorded only
+        # if ``status`` would offer it at this moment.
+        now = status(gh, config, number)
+        if now.get("action") != "fix-further":
+            why = "; ".join(str(r) for r in now.get("reasons") or []) or str(now.get("action"))
+            raise LimitReached(
+                f"pull request {number} does not qualify for the further fix round now "
+                f"({why}); run status again and follow it"
+            )
     elif used >= config.max_fix_rounds:
         raise LimitReached(
             f"pull request {number} has used all {config.max_fix_rounds} fix rounds; "

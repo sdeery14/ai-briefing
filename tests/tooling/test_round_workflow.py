@@ -1348,6 +1348,25 @@ def test_the_further_fix_round_cannot_be_recorded_early_or_over_a_dispute() -> N
         round_outcome.record_fix_round(untagged, CONFIG, 12, further=True)
     assert untagged.mutations == []
 
+    # A required check that failed after status offered the round: it is read again.
+    failing = FakeGh(
+        pull_request=pull(failed_checks()), comments=[marker(1), marker(2)], threads=[thread()]
+    )
+    assert round_outcome.status(failing, CONFIG, 12)["outcome"] == "needs-human"
+    with pytest.raises(
+        round_outcome.LimitReached, match="does not qualify for the further fix round now"
+    ):
+        round_outcome.record_fix_round(failing, CONFIG, 12, further=True)
+    assert failing.mutations == []
+
+    # Nor when the pull request's state cannot be read at that moment.
+    unreadable = FakeGh(comments=[marker(1), marker(2)], threads=[thread()], fail_on=["rules"])
+    with pytest.raises(
+        round_outcome.LimitReached, match="does not qualify for the further fix round now"
+    ):
+        round_outcome.record_fix_round(unreadable, CONFIG, 12, further=True)
+    assert unreadable.mutations == []
+
     critical = FakeGh(comments=[marker(1), marker(2)], threads=[p0_thread()])
     with pytest.raises(round_outcome.EscalationRequired):
         round_outcome.record_fix_round(critical, CONFIG, 12, further=True)
