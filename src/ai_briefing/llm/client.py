@@ -41,6 +41,7 @@ from ai_briefing.llm.backends import (
 from ai_briefing.llm.budget import MONTHLY, current_spend
 from ai_briefing.llm.config import ModelsConfig
 from ai_briefing.llm.pricing import Usage, cost, prompt_token_ceiling, worst_case_cost
+from ai_briefing.runtime import tracing
 from ai_briefing.storage import repositories
 
 T = TypeVar("T", bound=BaseModel)
@@ -173,7 +174,10 @@ class ModelClient:
             # 2. The call.
             started = self._timer()
             try:
-                response = self._backend.create(request)
+                with tracing.span(
+                    "model_call", task=task.value, model=model_id, job_run_id=job_run_id
+                ):
+                    response = self._backend.create(request)
             except BackendError as error:
                 latency = int((self._timer() - started) * 1000)
                 call = record(

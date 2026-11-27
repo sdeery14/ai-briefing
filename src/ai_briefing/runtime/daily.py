@@ -31,8 +31,9 @@ from ai_briefing.sources.collect import collect
 from ai_briefing.sources.fetcher import Fetcher
 from ai_briefing.storage import queries
 from ai_briefing.storage.jobs import run_job, utc_now
+from ai_briefing.storage.retention import purge
 
-STAGES = ("collect", "screen", "fetch-bodies", "assess", "briefing")
+STAGES = ("collect", "screen", "fetch-bodies", "assess", "briefing", "purge")
 AFTER_FAILURE = "after-failure"
 
 
@@ -229,8 +230,20 @@ def run_day(
         result.briefing_status = composed.briefing.status.value
         return briefing_counts(composed), composed.created
 
+    def purging() -> tuple[Mapping[str, int], bool]:
+        # Last, so the day's work is never short of text the purge was about to remove.
+        outcome = purge(
+            engine,
+            catalogue,
+            day=day,
+            application_version=application_version,
+            configuration_hash=configuration_hash,
+            clock=clock,
+        )
+        return outcome.counts, outcome.ran
+
     for name, run in zip(
-        STAGES, (collecting, screening, fetching, assessing, composing), strict=True
+        STAGES, (collecting, screening, fetching, assessing, composing, purging), strict=True
     ):
         stage(name, run)
     log.event(

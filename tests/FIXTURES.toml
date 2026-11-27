@@ -1,0 +1,100 @@
+# The fixtures licence manifest (ADR-010).
+#
+# Every file under tests/ or evals/ that is not Python source is listed here, with where
+# it came from and the licence it is under. scripts/check_fixtures.py fails, and so does
+# CI, when a file is present and not listed, or listed and not present.
+#
+# origin is one of:
+#   synthetic   invented for the tests; quotes no real source
+#   owner       written by the repository owner
+#   licensed    third-party content whose licence permits redistribution; give `source`
+#
+# No third-party article text belongs in this repository. If a file cannot honestly be
+# given one of these origins, it must not be committed.
+
+schema = "fixtures.v1"
+
+[[fixtures]]
+origin = "synthetic"
+licence = "Apache-2.0"
+note = "Briefing documents written by hand to exercise the daily_briefing.v1 contract, and the list of which are valid. Every source, title and address in them is invented."
+files = [
+    "tests/contracts/daily_briefing_v1/invalid/concept_note_too_long.json",
+    "tests/contracts/daily_briefing_v1/invalid/concept_note_without_a_story.json",
+    "tests/contracts/daily_briefing_v1/invalid/concept_note_without_related_item.json",
+    "tests/contracts/daily_briefing_v1/invalid/degraded_without_reasons.json",
+    "tests/contracts/daily_briefing_v1/invalid/eleven_watch_items.json",
+    "tests/contracts/daily_briefing_v1/invalid/empty_with_a_concept_note.json",
+    "tests/contracts/daily_briefing_v1/invalid/empty_with_a_story.json",
+    "tests/contracts/daily_briefing_v1/invalid/evidence_url_file.json",
+    "tests/contracts/daily_briefing_v1/invalid/evidence_url_javascript.json",
+    "tests/contracts/daily_briefing_v1/invalid/evidence_url_with_markup.json",
+    "tests/contracts/daily_briefing_v1/invalid/generated_at_not_utc.json",
+    "tests/contracts/daily_briefing_v1/invalid/headline_too_long.json",
+    "tests/contracts/daily_briefing_v1/invalid/local_date_not_a_date.json",
+    "tests/contracts/daily_briefing_v1/invalid/missing_schema_version.json",
+    "tests/contracts/daily_briefing_v1/invalid/negative_source_count.json",
+    "tests/contracts/daily_briefing_v1/invalid/ready_with_degraded_reasons.json",
+    "tests/contracts/daily_briefing_v1/invalid/six_stories.json",
+    "tests/contracts/daily_briefing_v1/invalid/stories_not_a_list.json",
+    "tests/contracts/daily_briefing_v1/invalid/story_class_low.json",
+    "tests/contracts/daily_briefing_v1/invalid/story_class_watch.json",
+    "tests/contracts/daily_briefing_v1/invalid/story_missing_why_it_matters.json",
+    "tests/contracts/daily_briefing_v1/invalid/story_with_model_supplied_field.json",
+    "tests/contracts/daily_briefing_v1/invalid/story_without_evidence.json",
+    "tests/contracts/daily_briefing_v1/invalid/summary_too_long.json",
+    "tests/contracts/daily_briefing_v1/invalid/unknown_confidence.json",
+    "tests/contracts/daily_briefing_v1/invalid/unknown_source_role.json",
+    "tests/contracts/daily_briefing_v1/invalid/unknown_status.json",
+    "tests/contracts/daily_briefing_v1/invalid/unknown_top_level_field.json",
+    "tests/contracts/daily_briefing_v1/invalid/watch_item_without_url.json",
+    "tests/contracts/daily_briefing_v1/invalid/wrong_schema_version.json",
+    "tests/contracts/daily_briefing_v1/manifest.json",
+    "tests/contracts/daily_briefing_v1/valid/degraded.json",
+    "tests/contracts/daily_briefing_v1/valid/empty.json",
+    "tests/contracts/daily_briefing_v1/valid/ready_at_limits.json",
+    "tests/contracts/daily_briefing_v1/valid/ready_minimal.json",
+    "tests/contracts/daily_briefing_v1/valid/ready_text_with_markup.json",
+    "tests/contracts/daily_briefing_v1/valid/ready_typical.json",
+    "tests/contracts/daily_briefing_v1/valid/ready_watchlist_only.json",
+]
+
+[[fixtures]]
+origin = "synthetic"
+licence = "Apache-2.0"
+note = "Recorded model responses written by hand for the model client's tests. No model was called and no source text is quoted."
+files = [
+    "tests/llm/recorded/screening_cached.json",
+    "tests/llm/recorded/screening_error.json",
+    "tests/llm/recorded/screening_extra_field.json",
+    "tests/llm/recorded/screening_invalid.json",
+    "tests/llm/recorded/screening_long.json",
+    "tests/llm/recorded/screening_refusal.json",
+    "tests/llm/recorded/screening_relevant.json",
+    "tests/llm/recorded/screening_truncated.json",
+]
+
+[[fixtures]]
+origin = "synthetic"
+licence = "Apache-2.0"
+note = "Recorded model responses for the synthetic day, produced by tests/pipeline/make_recordings.py from the scripted stand-in in tests/pipeline/conftest.py. No model was called; every source is invented and under example.org."
+files = [
+    "tests/pipeline/recorded/01_screening.json",
+    "tests/pipeline/recorded/02_assessment.json",
+    "tests/pipeline/recorded/03_assessment.json",
+    "tests/pipeline/recorded/04_assessment.json",
+    "tests/pipeline/recorded/05_assessment.json",
+    "tests/pipeline/recorded/06_assessment.json",
+    "tests/pipeline/recorded/07_assessment.json",
+    "tests/pipeline/recorded/08_assessment.json",
+    "tests/pipeline/recorded/09_assessment.json",
+    "tests/pipeline/recorded/10_concept_note.json",
+]
+
+[[fixtures]]
+origin = "synthetic"
+licence = "Apache-2.0"
+note = "A made-up milestone and its issues, in the shape the GitHub API returns, for the round-planning tests."
+files = [
+    "tests/tooling/fixtures/round/milestone_m1.json",
+]

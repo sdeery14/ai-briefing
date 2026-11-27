@@ -93,8 +93,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="where to write (default: AI_BRIEFING_EXPORT_DIR, else export/ beside the database)",
     )
 
+    retention = commands.add_parser("retention", help="apply the retention policy")
+    retention_commands = retention.add_subparsers(
+        dest="retention_command", metavar="action", required=True
+    )
+    purge = retention_commands.add_parser(
+        "purge", help="remove article text and model requests that are past their retention"
+    )
+    purge.add_argument("--database", help=DATABASE_HELP)
+
     run = commands.add_parser(
-        "run", help="run the day's jobs in order: collect, process, compose the briefing"
+        "run",
+        help="run the day's jobs in order: collect, process, compose the briefing, purge",
     )
     run.add_argument("--date", help="the local date to run for (default: today)")
     run.add_argument("--timezone", help=TIMEZONE_HELP)
@@ -398,6 +408,41 @@ def _briefing_export(
     return 0
 
 
+def _retention_purge(database: str | None) -> int:
+    from ai_briefing.sources.catalogue import CatalogueError, load_catalogue
+    from ai_briefing.storage import database as storage
+    from ai_briefing.storage.lock import LockHeld, job_lock
+    from ai_briefing.storage.retention import purge
+
+    path = storage.database_path(database)
+    try:
+        catalogue = load_catalogue()
+        if not path.is_file():
+            raise storage.StorageError(f"{path} does not exist; run `ai-briefing db upgrade` first")
+        with job_lock(path):
+            engine = storage.create_database_engine(path)
+            try:
+                if storage.current_revision(engine) != storage.head_revision():
+                    raise storage.StorageError(
+                        f"{path} is not at the current schema; run `ai-briefing db upgrade`"
+                    )
+                outcome = purge(
+                    engine,
+                    catalogue,
+                    day=current_time().date().isoformat(),
+                    application_version=__version__,
+                    configuration_hash=_configuration_hash(),
+                    run_again=True,
+                    clock=current_time,
+                )
+            finally:
+                engine.dispose()
+    except (CatalogueError, LockHeld, storage.StorageError, ValueError, OSError) as error:
+        return _fail(error)
+    sys.stdout.write(json.dumps(dict(outcome.counts), sort_keys=True) + "\n")
+    return 0
+
+
 def _run_day(
     database: str | None, date_text: str | None, timezone_text: str | None, replay: str | None
 ) -> int:
@@ -587,6 +632,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _briefing_generate(args.database, args.date, args.timezone, args.format)
     if args.command == "briefing" and args.briefing_command == "export":
         return _briefing_export(args.database, args.date, args.timezone, args.output_dir)
+    if args.command == "retention" and args.retention_command == "purge":
+        return _retention_purge(args.database)
     if args.command == "run":
         return _run_day(args.database, args.date, args.timezone, args.replay)
     if args.command == "doctor":

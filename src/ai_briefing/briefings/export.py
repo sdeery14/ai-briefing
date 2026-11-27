@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_briefing.briefings.contract import contract_validator, load_schema
+from ai_briefing.runtime import tracing
 
 LATEST = "latest.json"
 ARCHIVE = "archive"
@@ -73,8 +74,9 @@ def export(content: dict[str, Any], directory: Path) -> Exported:
     latest = directory / LATEST
     # The archive first: if the second write fails, the current file is still the
     # previous briefing, whole.
-    _write_atomically(archived, data)
-    _write_atomically(latest, data)
+    with tracing.span("export", briefing_id=briefing_id):
+        _write_atomically(archived, data)
+        _write_atomically(latest, data)
     return Exported(latest=latest, archived=archived)
 
 
