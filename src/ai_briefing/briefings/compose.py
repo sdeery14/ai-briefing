@@ -35,6 +35,7 @@ from ai_briefing.domain.enums import (
     Confidence,
     EditorialClass,
     LLMCallStatus,
+    ModelTask,
     SourceKind,
     SourceRole,
 )
@@ -61,6 +62,8 @@ ANY_URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 URL_REMOVED = "[link removed]"
 STORY_CLASSES = (EditorialClass.MAJOR, EditorialClass.PRACTICAL)
 BUDGET_REASON = "Budget: some items could not be assessed today."
+# The model tasks whose refusal means an item went unscreened or unassessed.
+ITEM_TASKS = (ModelTask.SCREENING, ModelTask.ASSESSMENT, ModelTask.ESCALATED_ASSESSMENT)
 
 
 class BriefingError(RuntimeError):
@@ -363,6 +366,9 @@ def _budget_refusals(connection: Connection, start: datetime, end: datetime) -> 
     rows = connection.execute(
         select(calls.c.id).where(
             calls.c.status == LLMCallStatus.BUDGET_REFUSED.value,
+            # Only a refusal that left an item unscreened or unassessed degrades the day.
+            # The concept note is optional: going without one is not a degraded briefing.
+            calls.c.purpose.in_([task.value for task in ITEM_TASKS]),
             calls.c.created_at >= start,
             calls.c.created_at < end,
         )

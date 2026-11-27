@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -388,6 +389,30 @@ def test_a_failure_in_asking_for_the_note_does_not_cost_the_briefing(
     assert made.created is True
     assert len(content["stories"]) == 3
     assert "concept_note" not in content
+
+
+def test_a_budget_refusal_of_the_note_is_not_a_degraded_briefing(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    # Every item was screened and assessed. Only the optional note cannot be afforded.
+    run_day(engine, config, ScriptedBackend(), FakeTransport())
+    spent = config.model_copy(
+        update={"budget": config.budget.model_copy(update={"daily_allowance": Decimal("0.0001")})}
+    )
+    backend = ScriptedBackend()
+    content = document(composed(engine, spent, backend))
+    (call,) = [c for c in table(engine, "llm_calls") if c["purpose"] == "concept_note"]
+    assert call["status"] == "budget_refused"
+    assert concept_requests(backend) == []  # refused before anything was sent
+    assert "concept_note" not in content
+    assert (content["status"], content["degraded_reasons"]) == ("ready", [])
+    assert len(content["stories"]) == 3
+    # A refusal is not an answer. With room in the budget again the question is asked,
+    # and the day's briefing gains its note as a new version.
+    later = composed(engine, config, backend, now=NOW + timedelta(hours=1))
+    assert later.created is True
+    assert document(later)["concept_note"]["body"] == CONCEPT_BODY
+    assert (document(later)["status"], later.briefing.version) == ("ready", 2)
 
 
 @pytest.mark.parametrize("text", ["not json at all", '{"qualifies": "perhaps"}'])
