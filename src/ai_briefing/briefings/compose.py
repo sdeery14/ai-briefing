@@ -16,9 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from functools import partial
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -34,6 +35,7 @@ from ai_briefing.domain.enums import (
     EditorialClass,
     LLMCallStatus,
     SourceKind,
+    SourceRole,
 )
 from ai_briefing.domain.records import Briefing, BriefingItem, Source
 from ai_briefing.editorial.policy import v0 as policy
@@ -181,7 +183,9 @@ def repetition(
         why = policy.may_appear_again(
             briefed_class=before.final_class,
             current_class=item.decision.final_class,
-            new_independent_evidence=_new_evidence(item, before.observation_ids),
+            new_independent_evidence=_new_evidence(
+                item, before.observation_ids, partial(_role_of, connection, item)
+            ),
         )
         if why is not None and item.story.id is not None:
             allowed.append(item)
@@ -189,17 +193,35 @@ def repetition(
     return allowed, returning
 
 
-def _new_evidence(item: queries.Assessed, already_shown: frozenset[int]) -> bool:
-    """Whether a verified quotation from a primary or independent source rests on an
-    observation the previously briefed assessment had not been shown.
+def _role_of(
+    connection: Connection, item: queries.Assessed, observation_id: int
+) -> SourceRole | None:
+    """The role of the source of the document an observation is of, if it is in the story."""
+    observation = queries.observation(connection, observation_id)
+    if observation is None:
+        return None
+    for document in item.documents:
+        if document.id == observation.document_id:
+            return document.source_role
+    return None
+
+
+def _new_evidence(
+    item: queries.Assessed,
+    already_shown: frozenset[int],
+    role_of: Callable[[int], SourceRole | None],
+) -> bool:
+    """Whether a verified quotation rests on an observation the previously briefed
+    assessment had not been shown, from a primary or independent source.
 
     Compared by observation, not by time: what counts is that the evidence is not what the
-    reader was already given.
+    reader was already given. The role is that of the source that was quoted, whichever
+    document the story is known by.
     """
-    if item.document.source_role not in policy.INDEPENDENT_ROLES:
-        return False
     return any(
-        evidence.counts_as_support and evidence.observation_id not in already_shown
+        evidence.counts_as_support
+        and evidence.observation_id not in already_shown
+        and role_of(evidence.observation_id) in policy.INDEPENDENT_ROLES
         for evidence in item.evidence
     )
 
@@ -367,7 +389,7 @@ def compose(
         reference - FRESHNESS,
         lambda item: current_input_hash(connection, sources, item),
     )
-    assessed = [item for item in assessed if item.document.fresh_at < end]
+    assessed = [item for item in assessed if item.fresh_at < end]
     assessed, returning = repetition(connection, assessed, local_date)
     reasons = [BUDGET_REASON] if _budget_refusals(connection, start, end) else []
     previous = latest_briefing(connection, local_date, BriefingVariant.PIPELINE)

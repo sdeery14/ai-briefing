@@ -427,7 +427,7 @@ def assess(
             for item in queries.open_stories(connection):
                 if item.story.id is None:
                     continue
-                if item.document.fresh_at < fresh_from:
+                if item.fresh_at < fresh_from:
                     continue  # no longer news; not worth a model call
                 members = story_members(connection, sources, item)
                 if not members:
@@ -449,7 +449,7 @@ def assess(
             source_of=lambda entry: entry[1].document.source_id,
             rank=lambda entry: (
                 -relevance.get(entry[1].document.id or 0, 0),
-                -entry[1].document.fresh_at.timestamp(),
+                -entry[1].fresh_at.timestamp(),
                 entry[0],
             ),
         )
@@ -637,7 +637,7 @@ def redecide(connection: Connection, sources: Mapping[str, Source], *, fresh_fro
             continue
         # The assessment is of the story's current input, so what it was given is what
         # would be sent now.
-        documents = (item.document, *(other.document for other in item.others))
+        documents = item.documents
         members = story_members(connection, sources, queries.StoryInput(item.story, documents))
         verdict = policy.decide(
             item.assessment.suggested_class,

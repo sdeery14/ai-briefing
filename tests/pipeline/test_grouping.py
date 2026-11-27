@@ -46,6 +46,8 @@ POSTED = int(datetime(2026, 11, 19, 9, 0, tzinfo=NOW.tzinfo).timestamp())
 PAPER = "https://papers.example.org/p-sound"
 RELEASE = "https://vendor.example.org/v-release"
 QUOTE = "It improves accuracy by 4 points over the baseline."
+STUDY = "We study how the library is used in practice."
+KNOWN_QUOTES = (QUOTE, "Today we are releasing version 2 of our library.", STUDY)
 
 
 def hn_item(number: int, title: str, url: str | None) -> dict[str, Any]:
@@ -87,20 +89,18 @@ def world(*items: dict[str, Any], papers: bool = True, vendor: bool = False) -> 
 
 
 def answer(request: ModelRequest) -> ModelResponse:
-    """Screening passes everything. An assessment quotes the first observation that has
-    text, or, when none has, offers words no observation could hold."""
+    """Screening passes everything. An assessment makes one claim with one quotation."""
     payload = json.loads(request.user)
     if "items" in payload:
         return scripted(request)
     observations = payload["observations"]
-    with_text = [o for o in observations if o["text"]]
-    cited = (with_text or observations)[0]
-    if with_text and QUOTE in cited["text"]:
-        quote = QUOTE
-    elif with_text:
-        quote = "Today we are releasing version 2 of our library."
-    else:
-        quote = "Something certainly happened here."
+    # Quote the newest observation that holds a sentence this script knows; when none
+    # does, offer words no observation could hold.
+    cited, quote = observations[0], "Something certainly happened here."
+    for observation in observations:
+        for known in KNOWN_QUOTES:
+            if observation["text"] and known in observation["text"]:
+                cited, quote = observation, known
     out = {
         "claims": [
             {
@@ -385,3 +385,136 @@ def test_a_story_known_only_from_a_discussion_is_assessed_after_every_other(
     assert stories_of(engine) == {1: ["papers"], 2: ["hn"]}
     (sent,) = assessments_sent(backend)
     assert [o["source_role"] for o in sent] == ["primary"]
+
+
+# --- Freshness and repetition for a story of several documents ------------------------------------
+
+
+def old_and_new(new_item: tuple[str, str, str] | None) -> FakeTransport:
+    """The vendor's release from a week ago, and optionally a paper about it from today
+    that links to the same page."""
+    week_old = "Thu, 12 Nov 2026 08:00:00 GMT"
+    vendor = _rss(
+        "vendor.example.org", ("v-release", "Library version 2 released", "<p>Announcement.</p>")
+    ).replace(b"Thu, 19 Nov 2026 08:00:00 GMT", week_old.encode())
+    paper = _rss("papers.example.org", *([new_item] if new_item else []))
+    # The paper's own entry points at the release page it studies.
+    paper = paper.replace(b"https://papers.example.org/p-study", RELEASE.encode())
+    return FakeTransport({VENDOR.url: vendor, PAPERS.url: paper, API + "topstories.json": b"[]"})
+
+
+def test_a_story_is_fresh_while_its_newest_evidence_is(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    # A week ago the release was news, and was assessed and briefed then.
+    then = NOW - timedelta(days=7)
+    run(engine, config, old_and_new(None), day="2026-11-12", now=then)
+    assert stories_of(engine) == {1: ["vendor"]}
+    assert len(table(engine, "editorial_assessments")) == 1
+    # Today nothing is new: the story is stale, and is neither assessed nor briefed.
+    _, quiet = run(engine, config, old_and_new(None), day="2026-11-18", now=NOW - timedelta(days=1))
+    assert quiet.requests == []
+    assert brief(engine, date(2026, 11, 18), NOW - timedelta(days=1))["status"] == "empty"
+    # A primary source now publishes about the same page. The story has fresh evidence,
+    # though the document it is known by is a week old.
+    study = ("p-study", "A study of library version 2", f"<p>{SOUND}</p>")
+    _, backend = run(engine, config, old_and_new(study))
+    assert stories_of(engine) == {1: ["papers", "vendor"]}
+    (sent,) = assessments_sent(backend)
+    assert sorted(o["source_role"] for o in sent) == ["primary", "vendor"]
+    content = brief(engine)
+    assert [s["headline"] for s in content["stories"]] != []
+    (story,) = content["stories"]
+    assert [e["source_role"] for e in story["evidence"]] == ["vendor", "primary"]
+
+
+def test_a_new_discussion_does_not_make_an_old_post_news_again(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    then = NOW - timedelta(days=7)
+    run(engine, config, old_and_new(None), day="2026-11-12", now=then)
+    # A week later someone posts the old release to Hacker News.
+    transport = old_and_new(None)
+    item = hn_item(520, "Library version 2 released", RELEASE)
+    transport.content[API + "topstories.json"] = b"[520]"
+    transport.content[API + "item/520.json"] = json.dumps(item).encode()
+    _, backend = run(engine, config, transport)
+    # The item is screened and joins the story, and that is all: attention is not evidence.
+    assert stories_of(engine) == {1: ["hn", "vendor"]}
+    assert assessments_sent(backend) == []
+    assert brief(engine)["status"] == "empty"
+
+
+def test_new_evidence_is_judged_by_the_source_that_was_quoted(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    # The vendor's release is briefed. The story is known by the vendor's document.
+    transport = world(papers=False, vendor=True)
+    run(engine, config, transport)
+    first = brief(engine)
+    assert [s["headline"] for s in first["stories"]] == ["Library version 2 released"]
+    # The next day a primary source's paper about the same page joins, and is quoted.
+    later = NOW + timedelta(hours=25)
+    study = _rss(
+        "papers.example.org", ("p-study", "A study of library version 2", f"<p>{SOUND}</p>")
+    ).replace(b"https://papers.example.org/p-study", RELEASE.encode())
+    joined = world(papers=False, vendor=True)
+    joined.content[PAPERS.url] = study
+    _, backend = run(engine, config, joined, day="2026-11-20", now=later)
+    assert stories_of(engine) == {1: ["papers", "vendor"]}
+    (sent,) = assessments_sent(backend)
+    assert len(sent) == 2
+    decisions = table(engine, "editorial_decisions")
+    assert [d["final_class"] for d in decisions] == ["practical", "practical"]  # class unchanged
+    # It returns: the new quotation is from the primary source, though the story is still
+    # known by the vendor's document.
+    second = brief(engine, date(2026, 11, 20), later)
+    (story,) = second["stories"]
+    assert story["story_id"] == first["stories"][0]["story_id"]
+    assert [e["source_role"] for e in story["evidence"]] == ["vendor", "primary"]
+    reasons = [
+        row["inclusion_reason"]
+        for row in table(engine, "briefing_items")
+        if row["briefing_id"] == 2
+    ]
+    assert reasons == [
+        f"class practical, ranked 1 of the day; briefed before, and {policy.NEW_EVIDENCE}"
+    ]
+
+
+def test_a_new_quotation_from_a_vendor_is_not_independent_evidence(
+    engine: Engine, config: ModelsConfig
+) -> None:
+    # The paper is briefed. Then the vendor's page about the same address joins the story
+    # and is the one quoted. The story is known by the paper, a primary source, and that
+    # does not make the vendor's words independent.
+    link = _rss(
+        "vendor.example.org", ("v-release", "Library version 2 released", "<p>Announcement.</p>")
+    )
+    paper = _rss(
+        "papers.example.org", ("p-study", "A study of library version 2", f"<p>{STUDY}</p>")
+    ).replace(b"https://papers.example.org/p-study", RELEASE.encode())
+    only_paper = FakeTransport(
+        {PAPERS.url: paper, VENDOR.url: _rss("vendor.example.org"), API + "topstories.json": b"[]"}
+    )
+    run(engine, config, only_paper)
+    first = brief(engine)
+    assert [s["headline"] for s in first["stories"]] == ["A study of library version 2"]
+    later = NOW + timedelta(hours=25)
+    both = FakeTransport({PAPERS.url: paper, VENDOR.url: link, API + "topstories.json": b"[]"})
+    run(engine, config, both, day="2026-11-20", now=later)
+    assert stories_of(engine) == {1: ["papers", "vendor"]}
+    quoted = [e for e in table(engine, "evidence_items") if e["integrity_status"] == "verified"]
+    documents = {d["id"]: d["source_id"] for d in table(engine, "source_documents")}
+    observations = {o["id"]: o["document_id"] for o in table(engine, "document_observations")}
+    by_assessment: dict[int, set[str]] = {}
+    for e in quoted:
+        by_assessment.setdefault(e["assessment_id"], set()).add(
+            documents[observations[e["observation_id"]]]
+        )
+    assert by_assessment == {1: {"papers"}, 2: {"vendor"}}
+    # The class is what it was, and the only new quotation is the vendor's own. That is
+    # not a material update, so the story does not return.
+    decisions = table(engine, "editorial_decisions")
+    assert [d["final_class"] for d in decisions] == ["practical", "practical"]
+    assert brief(engine, date(2026, 11, 20), later)["status"] == "empty"

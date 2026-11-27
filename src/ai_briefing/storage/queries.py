@@ -7,7 +7,7 @@ work finds nothing here the next time, which is what makes running it twice add 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -118,6 +118,16 @@ def passed_documents_without_body(
 _PASSES_ON = frozenset({SourceRole.COMMUNITY, SourceRole.AGGREGATOR})
 
 
+def newest_evidence_at(documents: Sequence[SourceDocument]) -> datetime:
+    """When a story's newest evidence was published (RFC §6.3): the latest of its documents
+    that can be evidence. A community or aggregator document is attention, not evidence,
+    so a new discussion of an old post does not make the post news again; a story that
+    holds nothing else is dated by what it has.
+    """
+    evidence = [d for d in documents if d.source_role not in _PASSES_ON] or list(documents)
+    return max(d.fresh_at for d in evidence)
+
+
 @dataclass(frozen=True)
 class StoryInput:
     """A story with the documents it holds now. Grouping can give it several."""
@@ -130,6 +140,11 @@ class StoryInput:
         """The document the story is known by: the earliest that is not from a community
         or aggregator source, or the earliest of those if it has no other."""
         return min(self.documents, key=lambda d: (d.source_role in _PASSES_ON, d.id or 0))
+
+    @property
+    def fresh_at(self) -> datetime:
+        """The time the story's freshness is counted from: its newest evidence."""
+        return newest_evidence_at(self.documents)
 
 
 def open_stories(connection: Connection) -> list[StoryInput]:
@@ -225,6 +240,15 @@ class Assessed:
     evidence: tuple[EvidenceItem, ...]
     others: tuple[Also, ...] = ()
 
+    @property
+    def documents(self) -> tuple[SourceDocument, ...]:
+        return (self.document, *(other.document for other in self.others))
+
+    @property
+    def fresh_at(self) -> datetime:
+        """The time the story's freshness is counted from: its newest evidence."""
+        return newest_evidence_at(self.documents)
+
 
 def assessed_stories(
     connection: Connection,
@@ -244,7 +268,7 @@ def assessed_stories(
     decisions = schema.editorial_decisions
     evidence = schema.evidence_items
     for item in open_stories(connection):
-        if item.document.fresh_at < fresh_from or item.story.id is None:
+        if item.fresh_at < fresh_from or item.story.id is None:
             continue
         wanted = current_input(item)
         if wanted is None:
