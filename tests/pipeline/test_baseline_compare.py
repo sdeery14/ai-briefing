@@ -624,6 +624,46 @@ def test_a_second_comparison_for_a_day_is_refused_unless_asked_for_and_then_says
     assert later.sequence == 2
 
 
+class Overlapping(Reader):
+    """A reader who, while deciding, records another comparison for the same day, as a
+    second terminal would."""
+
+    def __init__(self, engine: Engine, *, again: bool) -> None:
+        super().__init__("b")
+        self.engine = engine
+        self.again = again
+        self.other: ComparisonJudgment | None = None
+
+    def ask(self, question: str) -> str:
+        if self.other is None:
+            self.other = judged(self.engine, Reader("a"), pipeline_first=True, again=self.again)
+        return super().ask(question)
+
+
+def test_two_comparisons_open_at_once_get_their_own_sequence_numbers(both: Engine) -> None:
+    judged(both, Reader("n"), pipeline_first=True)
+    reader = Overlapping(both, again=True)
+    outer = judged(both, reader, pipeline_first=False, again=True)
+    assert reader.other is not None
+    assert (reader.other.sequence, outer.sequence) == (2, 3)
+    rows = table(both, "comparison_judgments")
+    assert [(r["sequence"], r["choice"]) for r in rows] == [
+        (1, "no_preference"),
+        (2, "first"),
+        (3, "second"),
+    ]
+
+
+def test_the_one_a_day_rule_holds_when_two_first_comparisons_overlap(both: Engine) -> None:
+    reader = Overlapping(both, again=False)
+    with pytest.raises(AlreadyCompared, match="already recorded"):
+        judged(both, reader, pipeline_first=False)
+    # The one that finished first is the day's judgement; the other stored nothing.
+    assert [(r["sequence"], r["choice"]) for r in table(both, "comparison_judgments")] == [
+        (1, "first")
+    ]
+
+
 @pytest.mark.parametrize("answers", [(), ("",), ("x", "maybe", "?"), ("x", "", "c", "a")])
 def test_without_a_choice_nothing_is_stored(both: Engine, answers: tuple[str, ...]) -> None:
     reader = Reader(*answers)

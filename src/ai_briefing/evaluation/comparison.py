@@ -167,11 +167,7 @@ def compare(
             f"there is no baseline digest for {day}; run `ai-briefing baseline generate` first"
         )
     if earlier and not again:
-        raise AlreadyCompared(
-            f"a preference for {day} is already recorded "
-            f"({len(earlier)} so far, the latest at {earlier[-1].recorded_at.isoformat()}). "
-            "Use --again to record another; the earlier ones are kept."
-        )
+        raise _already(day, earlier)
     first_is_pipeline = bool((pipeline_first or random_order)())
     ordered: tuple[Briefing, Briefing] = (
         (pipeline, baseline) if first_is_pipeline else (baseline, pipeline)
@@ -186,19 +182,34 @@ def compare(
             break
     if choice is None:
         raise ComparisonError("no choice was made, so nothing was recorded")
-    judgment = ComparisonJudgment(
-        local_date=local_date,
-        sequence=len(earlier) + 1,
-        pipeline_briefing_id=pipeline.id,
-        baseline_briefing_id=baseline.id,
-        presentation_order=(
-            PresentationOrder.PIPELINE_FIRST
-            if first_is_pipeline
-            else PresentationOrder.BASELINE_FIRST
-        ),
-        choice=choice,
-        in_force=json.dumps(in_force(), sort_keys=True),
-        recorded_at=clock(),
+    order = (
+        PresentationOrder.PIPELINE_FIRST if first_is_pipeline else PresentationOrder.BASELINE_FIRST
     )
     with writing(), engine.begin() as connection:
-        return repositories.add(connection, judgment)
+        # Read again inside the write: another comparison for the day may have been
+        # recorded while this one was being read. The sequence is given here, from what
+        # is stored now, and the one-a-day rule is applied to what is stored now.
+        stored = queries.comparison_judgments(connection, local_date)
+        if stored and not again:
+            raise _already(day, stored)
+        return repositories.add(
+            connection,
+            ComparisonJudgment(
+                local_date=local_date,
+                sequence=len(stored) + 1,
+                pipeline_briefing_id=pipeline.id,
+                baseline_briefing_id=baseline.id,
+                presentation_order=order,
+                choice=choice,
+                in_force=json.dumps(in_force(), sort_keys=True),
+                recorded_at=clock(),
+            ),
+        )
+
+
+def _already(day: str, earlier: list[ComparisonJudgment]) -> AlreadyCompared:
+    return AlreadyCompared(
+        f"a preference for {day} is already recorded "
+        f"({len(earlier)} so far, the latest at {earlier[-1].recorded_at.isoformat()}). "
+        "Use --again to record another; the earlier ones are kept."
+    )
