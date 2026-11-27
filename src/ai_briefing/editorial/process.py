@@ -34,11 +34,11 @@ from ai_briefing.domain.enums import (
     EditorialClass,
     IntegrityStatus,
     LLMCallStatus,
-    MembershipAction,
     ModelSubmission,
     ModelTask,
     ScreeningOutcome,
     SourceMode,
+    SourceRole,
     SupportType,
 )
 from ai_briefing.domain.records import (
@@ -50,8 +50,6 @@ from ai_briefing.domain.records import (
     ScreeningDecision,
     Source,
     SourceDocument,
-    Story,
-    StoryMembershipEvent,
 )
 from ai_briefing.editorial import integrity
 from ai_briefing.editorial.contracts import AssessmentOutput, ScreeningOutput
@@ -63,6 +61,7 @@ from ai_briefing.sources.fetcher import Fetcher
 from ai_briefing.sources.network import FetchError
 from ai_briefing.storage import queries, repositories
 from ai_briefing.storage.jobs import JobOutcome, run_job, utc_now
+from ai_briefing.stories import grouping
 
 SCREENING_BATCH = 25
 SCREENING_MAX_OUTPUT_TOKENS = 4_000
@@ -74,7 +73,6 @@ MAX_ASSESSED_PER_RUN = 60
 # Article text beyond this is not sent. It keeps a prompt well under the size at which
 # the inexpensive model's higher price applies, whatever the article's length.
 MAX_TEXT_CHARS = 40_000
-OWN_STORY_RULE = "own-story"
 # How long an item is news is an editorial rule, so it lives with the policy. Older items
 # are kept for recognition and are not screened, fetched, assessed or briefed.
 FRESHNESS = policy.FRESHNESS
@@ -108,11 +106,10 @@ def assessment_text(source: Source, observation: DocumentObservation) -> str | N
     return None
 
 
-def assessment_packet(
+def _shown(
     source: Source, document: SourceDocument, observation: DocumentObservation
-) -> str:
-    """The message sent to the model for one story: its observations, as permitted."""
-    shown = {
+) -> dict[str, object]:
+    return {
         "observation_id": observation.id,
         "source_name": source.name,
         "source_role": document.source_role.value,
@@ -120,7 +117,54 @@ def assessment_packet(
         "published": document.published_at.isoformat() if document.published_at else None,
         "text": assessment_text(source, observation),
     }
-    return json.dumps({"observations": [shown]}, ensure_ascii=False, sort_keys=True)
+
+
+def assessment_packet(
+    source: Source, document: SourceDocument, observation: DocumentObservation
+) -> str:
+    """The message sent to the model for a story of one document, as permitted."""
+    return json.dumps(
+        {"observations": [_shown(source, document, observation)]},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+@dataclass(frozen=True)
+class Member:
+    """One document of a story as the model is shown it: the observation, and the text of
+    it that its own source permits sending. Text is never borrowed from another source."""
+
+    source: Source
+    document: SourceDocument
+    observation: DocumentObservation
+    text: str | None
+
+
+def story_members(
+    connection: Connection, sources: Mapping[str, Source], item: queries.StoryInput
+) -> list[Member]:
+    """What the model may be shown of a story: one observation per document whose source
+    is enabled and permits sending anything, in observation order."""
+    members: list[Member] = []
+    for document in item.documents:
+        source = sources.get(document.source_id)
+        if source is None or not source.enabled:
+            continue
+        if source.model_submission is ModelSubmission.NONE:
+            continue
+        observation = best_observation(connection, source, document)
+        if observation is None or observation.id is None:
+            continue
+        members.append(Member(source, document, observation, assessment_text(source, observation)))
+    return sorted(members, key=lambda member: member.observation.id or 0)
+
+
+def story_packet(members: Sequence[Member]) -> str:
+    """The message sent to the model for a story: its observations, as permitted. For a
+    story of one document this is exactly :func:`assessment_packet`."""
+    shown = [_shown(m.source, m.document, m.observation) for m in members]
+    return json.dumps({"observations": shown}, ensure_ascii=False, sort_keys=True)
 
 
 def best_observation(
@@ -178,13 +222,8 @@ def current_input_hash(
     Assessment and briefing selection both use this, so a briefing shows the assessment
     of what the source says today.
     """
-    source = sources.get(item.document.source_id)
-    if source is None or not source.enabled or source.model_submission is ModelSubmission.NONE:
-        return None
-    observation = best_observation(connection, source, item.document)
-    if observation is None or observation.id is None:
-        return None
-    return input_hash(assessment_packet(source, item.document, observation))
+    members = story_members(connection, sources, item)
+    return input_hash(story_packet(members)) if members else None
 
 
 # --- Stage 1: screen ----------------------------------------------------------------------------
@@ -267,27 +306,9 @@ def screen(
             repositories.add(connection, decision)
             counts["screened"] += 1
             counts["passed" if decision.outcome is ScreeningOutcome.PASSED else "rejected"] += 1
-        # In M1 each document that passes is a story of its own (issue 1.9 adds grouping).
-        now = clock()
-        for document in queries.passed_documents_without_story(connection):
-            if document.id is None:
-                continue
-            story = repositories.add(
-                connection, Story(title=document.title, first_seen_at=now, last_activity_at=now)
-            )
-            if story.id is None:
-                continue
-            repositories.record_membership(
-                connection,
-                StoryMembershipEvent(
-                    story_id=story.id,
-                    document_id=document.id,
-                    action=MembershipAction.ADD,
-                    reason="a document that passed screening starts its own story",
-                    decided_by_rule=OWN_STORY_RULE,
-                    occurred_at=now,
-                ),
-            )
+        # A document that passes joins the story of one with the same address, or starts
+        # its own (ADR-003).
+        grouping.group(connection, clock())
         return counts
 
     return run_job(
@@ -368,9 +389,8 @@ def fetch_bodies(
 @dataclass
 class _Assessed:
     story_id: int
-    source: Source
-    document: SourceDocument
-    observation: DocumentObservation
+    members: list[Member]
+    roles: list[tuple[str, SourceRole]]
     as_of: datetime
     digest: str
     model_call_id: int
@@ -403,25 +423,22 @@ def assess(
     def prepare(job_run_id: int) -> None:
         fresh_from = clock() - FRESHNESS
         with engine.connect() as connection:
-            pending: list[tuple[int, Source, SourceDocument, DocumentObservation, str, str]] = []
+            pending: list[tuple[int, queries.StoryInput, list[Member], str, str]] = []
             for item in queries.open_stories(connection):
-                source = sources.get(item.document.source_id)
-                if source is None or item.story.id is None:
-                    continue
-                if source.model_submission is ModelSubmission.NONE or not source.enabled:
+                if item.story.id is None:
                     continue
                 if item.document.fresh_at < fresh_from:
                     continue  # no longer news; not worth a model call
-                observation = best_observation(connection, source, item.document)
-                if observation is None or observation.id is None:
+                members = story_members(connection, sources, item)
+                if not members:
                     continue
-                packet = assessment_packet(source, item.document, observation)
+                packet = story_packet(members)
                 digest = input_hash(packet)
                 if queries.assessment_exists(
                     connection, item.story.id, digest, prompt.sha256, model_id
                 ):
                     continue
-                pending.append((item.story.id, source, item.document, observation, packet, digest))
+                pending.append((item.story.id, item, members, packet, digest))
             relevance = queries.screening_relevance(connection)
         # A run assesses a limited number, so the order decides what the day's briefing
         # is made from. Within a source: the most relevant first, then the newest. Across
@@ -429,17 +446,17 @@ def assess(
         # cannot use up the run before the others are reached.
         pending = in_turn(
             pending,
-            source_of=lambda entry: entry[1].id,
+            source_of=lambda entry: entry[1].document.source_id,
             rank=lambda entry: (
-                -relevance.get(entry[2].id or 0, 0),
-                -entry[2].fresh_at.timestamp(),
+                -relevance.get(entry[1].document.id or 0, 0),
+                -entry[1].document.fresh_at.timestamp(),
                 entry[0],
             ),
         )
-        for story_id, source, document, observation, packet, digest in pending[
-            :MAX_ASSESSED_PER_RUN
-        ]:
-            text = assessment_text(source, observation)
+        # A story known only from a community source cannot exceed watch (RFC §6.2), so
+        # it waits until every other story has had its place in the run.
+        pending.sort(key=lambda entry: entry[1].document.source_role in policy.COMMUNITY_ROLES)
+        for story_id, item, members, packet, digest in pending[:MAX_ASSESSED_PER_RUN]:
             as_of = clock()
             result = client.call(
                 task=ModelTask.ASSESSMENT,
@@ -454,14 +471,18 @@ def assess(
                 result.status is not LLMCallStatus.SUCCEEDED
                 or result.output is None
                 or result.call.id is None
-                or observation.id is None
             ):
                 counts["calls_without_result"] += 1
                 if result.status is LLMCallStatus.BUDGET_REFUSED:
                     break
                 continue
             # What the model was given, as it was given: the text is the sent text.
-            given = {observation.id: integrity.Shown(observation, text)}
+            given = {
+                member.observation.id: integrity.Shown(member.observation, member.text)
+                for member in members
+                if member.observation.id is not None
+            }
+            source_of = {member.observation.id: member.source for member in members}
             citations = [c for claim in result.output.claims for c in claim.evidence]
             if any(c.observation_id not in given for c in citations):
                 # A citation to something the model was never shown. The whole assessment
@@ -470,21 +491,22 @@ def assess(
                 continue
             assessed = _Assessed(
                 story_id=story_id,
-                source=source,
-                document=document,
-                observation=observation,
+                members=members,
+                roles=[(d.source_id, d.source_role) for d in item.documents],
                 as_of=as_of,
                 digest=digest,
                 model_call_id=result.call.id,
                 output=result.output,
-                has_text=bool(text),
+                has_text=any(member.text for member in members),
             )
-            limit = source.excerpt_limit_chars
             for claim in result.output.claims:
                 for citation in claim.evidence:
                     quote = citation.quote.strip()
                     if not quote:
                         continue
+                    # The quotation rules are those of the source that was quoted.
+                    source = source_of[citation.observation_id]
+                    limit = source.excerpt_limit_chars
                     if not source.excerpts_allowed or (limit is not None and len(quote) > limit):
                         # Longer than the source's quotation limit, or from a source that
                         # allows none. It is not kept, not shown, and gives no support.
@@ -529,9 +551,13 @@ def assess(
                     model_call_id=item.model_call_id,
                 ),
             )
-            if assessment.id is None or item.observation.id is None:
+            if assessment.id is None:
                 continue
-            repositories.add_assessment_inputs(connection, assessment.id, [item.observation.id])
+            repositories.add_assessment_inputs(
+                connection,
+                assessment.id,
+                [m.observation.id for m in item.members if m.observation.id is not None],
+            )
             verified = 0
             for claim_text, observation_id, quote, support, status in item.evidence:
                 stored = repositories.add(
@@ -554,7 +580,7 @@ def assess(
                 assessment.suggested_class,
                 verified_supporting_evidence=verified,
                 has_source_text=item.has_text,
-                source_roles=[(item.document.source_id, item.document.source_role)],
+                source_roles=item.roles,
             )
             repositories.add(
                 connection,
@@ -600,8 +626,7 @@ def redecide(connection: Connection, sources: Mapping[str, Source], *, fresh_fro
         connection, fresh_from, lambda item: current_input_hash(connection, sources, item)
     )
     for item in standing:
-        source = sources.get(item.document.source_id)
-        if item.decision.policy_version == policy.POLICY_VERSION or source is None:
+        if item.decision.policy_version == policy.POLICY_VERSION:
             continue
         if item.assessment.id is None:
             continue
@@ -610,15 +635,15 @@ def redecide(connection: Connection, sources: Mapping[str, Source], *, fresh_fro
             # has made its own. A later decision under another version stands instead:
             # versions only move forward, so that is a correction, not a stale decision.
             continue
-        # The assessment is of the story's current input, so the text it was given is the
-        # text that would be sent now.
-        observation = best_observation(connection, source, item.document)
-        text = assessment_text(source, observation) if observation is not None else None
+        # The assessment is of the story's current input, so what it was given is what
+        # would be sent now.
+        documents = (item.document, *(other.document for other in item.others))
+        members = story_members(connection, sources, queries.StoryInput(item.story, documents))
         verdict = policy.decide(
             item.assessment.suggested_class,
             verified_supporting_evidence=sum(e.counts_as_support for e in item.evidence),
-            has_source_text=bool(text),
-            source_roles=[(item.document.source_id, item.document.source_role)],
+            has_source_text=any(member.text for member in members),
+            source_roles=[(d.source_id, d.source_role) for d in documents],
         )
         repositories.add(
             connection,

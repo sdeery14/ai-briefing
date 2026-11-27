@@ -14,7 +14,13 @@ from datetime import date, datetime
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.engine import Connection
 
-from ai_briefing.domain.enums import BriefingVariant, EditorialClass, ScreeningOutcome
+from ai_briefing.domain.enums import (
+    BriefingVariant,
+    EditorialClass,
+    ScreeningOutcome,
+    SourceKind,
+    SourceRole,
+)
 from ai_briefing.domain.records import (
     DocumentObservation,
     EditorialAssessment,
@@ -107,12 +113,23 @@ def passed_documents_without_body(
     )
 
 
+# A community or aggregator document passes a story on or discusses it. It is never the
+# document a story is known by while the story holds any other kind.
+_PASSES_ON = frozenset({SourceRole.COMMUNITY, SourceRole.AGGREGATOR})
+
+
 @dataclass(frozen=True)
 class StoryInput:
-    """A story with the document it holds. In M1 each story has exactly one document."""
+    """A story with the documents it holds now. Grouping can give it several."""
 
     story: Story
-    document: SourceDocument
+    documents: tuple[SourceDocument, ...]
+
+    @property
+    def document(self) -> SourceDocument:
+        """The document the story is known by: the earliest that is not from a community
+        or aggregator source, or the earliest of those if it has no other."""
+        return min(self.documents, key=lambda d: (d.source_role in _PASSES_ON, d.id or 0))
 
 
 def open_stories(connection: Connection) -> list[StoryInput]:
@@ -126,13 +143,32 @@ def open_stories(connection: Connection) -> list[StoryInput]:
         .where(stories.c.state == "open")
         .order_by(stories.c.id, documents.c.id)
     ).all()
-    found: list[StoryInput] = []
+    held: dict[int, list[SourceDocument]] = {}
     for row in rows:
-        story = repositories.get(connection, Story, row.story_id)
         document = repositories.get(connection, SourceDocument, row.document_id)
-        if story is not None and document is not None:
-            found.append(StoryInput(story, document))
+        if document is not None:
+            held.setdefault(row.story_id, []).append(document)
+    found: list[StoryInput] = []
+    for story_id, members in held.items():
+        story = repositories.get(connection, Story, story_id)
+        if story is not None:
+            found.append(StoryInput(story, tuple(members)))
     return found
+
+
+def open_story_addresses(connection: Connection) -> list[tuple[int, str]]:
+    """Each open story with the address of each document in it, earliest story first."""
+    stories = schema.stories
+    documents = schema.source_documents
+    current = schema.story_documents
+    rows = connection.execute(
+        select(current.c.story_id, documents.c.canonical_url)
+        .join(stories, stories.c.id == current.c.story_id)
+        .join(documents, documents.c.id == current.c.document_id)
+        .where(stories.c.state == "open")
+        .order_by(current.c.story_id, documents.c.id)
+    ).all()
+    return [(row.story_id, row.canonical_url) for row in rows]
 
 
 def assessment_exists(
@@ -169,6 +205,15 @@ def observation(connection: Connection, observation_id: int) -> DocumentObservat
 
 
 @dataclass(frozen=True)
+class Also:
+    """Another document in a story, beside the one it is known by."""
+
+    document: SourceDocument
+    source_name: str
+    source_kind: SourceKind
+
+
+@dataclass(frozen=True)
 class Assessed:
     """Everything behind one story's place in a briefing."""
 
@@ -178,6 +223,7 @@ class Assessed:
     assessment: EditorialAssessment
     decision: EditorialDecision
     evidence: tuple[EvidenceItem, ...]
+    others: tuple[Also, ...] = ()
 
 
 def assessed_stories(
@@ -233,9 +279,18 @@ def assessed_stories(
             .where(evidence.c.assessment_id == assessment_row.id)
             .order_by(evidence.c.id)
         ).mappings()
-        source_name = connection.execute(
-            select(schema.sources.c.name).where(schema.sources.c.id == item.document.source_id)
-        ).scalar_one()
+        named = {
+            row.id: (row.name, SourceKind(row.kind))
+            for row in connection.execute(
+                select(schema.sources.c.id, schema.sources.c.name, schema.sources.c.kind)
+            )
+        }
+        source_name = named[item.document.source_id][0]
+        others = tuple(
+            Also(document, *named[document.source_id])
+            for document in item.documents
+            if document.id != item.document.id and document.source_id in named
+        )
         found.append(
             Assessed(
                 story=item.story,
@@ -244,6 +299,7 @@ def assessed_stories(
                 assessment=assessment,
                 decision=decision,
                 evidence=tuple(EvidenceItem.model_validate(dict(row)) for row in items),
+                others=others,
             )
         )
     return found

@@ -1,4 +1,5 @@
-"""Collecting new items from the catalogue's feeds (RFC §4 steps 1 to 3 and 5).
+"""Collecting new items from the catalogue's feeds and from the Hacker News API (RFC §4
+steps 1 to 3 and 5).
 
 Collection is a job. Its fetching happens first, with no database transaction open; one
 source failing is recorded and does not stop the others. Its writes then happen in one
@@ -31,6 +32,7 @@ from sqlalchemy.engine import Connection
 
 from ai_briefing.domain.enums import BodySource, FetchStatus, SourceKind, SourceMode
 from ai_briefing.domain.records import DocumentObservation, Source, SourceDocument
+from ai_briefing.sources import hn
 from ai_briefing.sources.feeds import FeedEntry, FeedError, parse_feed
 from ai_briefing.sources.fetcher import Fetcher, FetchResult
 from ai_briefing.sources.network import FetchError
@@ -39,6 +41,8 @@ from ai_briefing.storage import repositories, source_state
 from ai_briefing.storage.jobs import JobOutcome, run_job, utc_now
 
 FEED_KINDS = frozenset({SourceKind.RSS, SourceKind.ATOM})
+# Every kind this module can read. A source of any other kind is counted and left alone.
+READABLE_KINDS = FEED_KINDS | {SourceKind.HN_API}
 PAGE_MAX_BYTES = 2_000_000
 
 
@@ -112,14 +116,20 @@ def collect(
     if only is not None and not wanted:
         raise ValueError(f"no source named {only!r} in the catalogue")
     # A disabled source is never requested, and neither is one this adapter cannot read.
-    to_fetch = [s for s in wanted if s.enabled and s.kind in FEED_KINDS]
-    without_adapter = [s.id for s in wanted if s.enabled and s.kind not in FEED_KINDS]
+    to_fetch = [s for s in wanted if s.enabled and s.kind in READABLE_KINDS]
+    without_adapter = [s.id for s in wanted if s.enabled and s.kind not in READABLE_KINDS]
     fetched: list[_Fetched] = []
     not_due: list[str] = []
 
     def prepare(_job_run_id: int) -> None:
         with engine.connect() as connection:
             states = {s.id: source_state.read_feed_state(connection, s.id) for s in to_fetch}
+            # For an API read item by item: what is already stored is not asked for again.
+            known = {
+                s.id: repositories.external_ids(connection, s.id)
+                for s in to_fetch
+                if s.kind is SourceKind.HN_API
+            }
         for source in to_fetch:
             state = states[source.id]
             if not is_due(source, state.last_success_at, started):
@@ -130,6 +140,15 @@ def collect(
             item = _Fetched(source)
             fetched.append(item)
             try:
+                if source.kind is SourceKind.HN_API:
+                    item.result, item.entries = hn.read(
+                        fetcher,
+                        source,
+                        known[source.id],
+                        etag=state.etag,
+                        last_modified=state.last_modified,
+                    )
+                    continue
                 item.result = fetcher.fetch(
                     source.url,
                     allowed_hosts=feed_hosts(source),

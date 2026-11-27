@@ -33,15 +33,18 @@ from ai_briefing.domain.enums import (
     Confidence,
     EditorialClass,
     LLMCallStatus,
+    SourceKind,
 )
 from ai_briefing.domain.records import Briefing, BriefingItem, Source
 from ai_briefing.editorial.policy import v0 as policy
 from ai_briefing.editorial.process import FRESHNESS, current_input_hash, redecide
+from ai_briefing.sources import hn
 from ai_briefing.storage import queries, repositories, schema
 
 SCHEMA_VERSION = "daily_briefing.v1"
 MAX_STORIES = 5
 MAX_WATCH = 10
+MAX_SOURCES = 8  # the contract's limit on a story's evidence list
 HEADLINE_CHARS = 200
 SUMMARY_CHARS = 800
 WHY_CHARS = 600
@@ -122,6 +125,38 @@ def _why(item: queries.Assessed, draft: dict[str, str]) -> str:
     note = "Uncertainty: " + clip(without_urls(item.assessment.uncertainty), UNCERTAINTY_CHARS)
     why = clip(draft["why_it_matters"], WHY_CHARS - len(note) - 1)
     return f"{why} {note}".strip()
+
+
+def _sources(item: queries.Assessed) -> list[dict[str, str]]:
+    """The documents behind a story, the one it is known by first. Every address is a
+    stored document's own, or, for a Hacker News item, its discussion page, built from
+    the item's stored id."""
+    listed = [
+        {
+            "title": clip(item.document.title, TITLE_CHARS),
+            "url": item.document.canonical_url,
+            "source_name": clip(item.source_name, SOURCE_NAME_CHARS),
+            "source_role": item.document.source_role.value,
+        }
+    ]
+    for other in item.others:
+        url = other.document.canonical_url
+        if other.source_kind is SourceKind.HN_API:
+            try:
+                url = hn.discussion_url(other.document.external_id)
+            except ValueError:
+                continue
+        if not WEB_URL.fullmatch(url) or len(listed) >= MAX_SOURCES:
+            continue
+        listed.append(
+            {
+                "title": clip(other.document.title, TITLE_CHARS),
+                "url": url,
+                "source_name": clip(other.source_name, SOURCE_NAME_CHARS),
+                "source_role": other.document.source_role.value,
+            }
+        )
+    return listed
 
 
 def _again(item: queries.Assessed, returning: Mapping[int, str]) -> str:
@@ -225,14 +260,7 @@ def build(
                 "summary": clip(draft["summary"] or item.document.title, SUMMARY_CHARS),
                 "why_it_matters": _why(item, draft),
                 "independent_source_count": item.decision.independent_source_count,
-                "evidence": [
-                    {
-                        "title": clip(item.document.title, TITLE_CHARS),
-                        "url": item.document.canonical_url,
-                        "source_name": clip(item.source_name, SOURCE_NAME_CHARS),
-                        "source_role": item.document.source_role.value,
-                    }
-                ],
+                "evidence": _sources(item),
             }
         )
         reason = f"class {item.decision.final_class.value}, ranked {len(stories)} of the day"

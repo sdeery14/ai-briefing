@@ -251,6 +251,13 @@ def upsert_source(connection: Connection, source: Source) -> None:
     )
 
 
+def external_ids(connection: Connection, source_id: str) -> frozenset[str]:
+    """The external id of every document stored for a source."""
+    table = schema.source_documents
+    rows = connection.execute(select(table.c.external_id).where(table.c.source_id == source_id))
+    return frozenset(rows.scalars())
+
+
 def find_document(
     connection: Connection, source_id: str, external_id: str
 ) -> SourceDocument | None:

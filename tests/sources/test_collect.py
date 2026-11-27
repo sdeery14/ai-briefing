@@ -11,11 +11,18 @@ from pathlib import Path
 import pytest
 from sqlalchemy import Engine, func, select
 
+from ai_briefing.domain.enums import SourceKind
 from ai_briefing.domain.records import Source, SourceDocument
 from ai_briefing.runtime import cli
 from ai_briefing.sources import collect as collecting
 from ai_briefing.sources import feeds as feeds_module
-from ai_briefing.sources.collect import collect, fetch_body, may_fetch_body, store_body
+from ai_briefing.sources.collect import (
+    READABLE_KINDS,
+    collect,
+    fetch_body,
+    may_fetch_body,
+    store_body,
+)
 from ai_briefing.sources.fetcher import Fetcher
 from ai_briefing.sources.network import Blocked, FetchError
 from ai_briefing.sources.transport import HopResponse
@@ -155,13 +162,10 @@ def test_a_disabled_source_is_never_requested(engine: Engine) -> None:
     assert row.enabled is False
 
 
-def test_a_source_without_a_feed_adapter_is_not_requested(engine: Engine) -> None:
-    api = source("api", "metadata_only", kind="hn_api", url="https://api.example.org/v0/")
-    transport = FakeTransport()
-    outcome = run(engine, transport, catalogue=(api,))
-    assert transport.requests == []
-    assert outcome.counts["sources_without_adapter"] == 1
-    assert outcome.counts["documents_added"] == 0
+def test_every_kind_of_source_in_the_catalogue_now_has_an_adapter() -> None:
+    # Until issue 1.9 a Hacker News source was counted and left alone. It is read now
+    # (tests/sources/test_hn.py), so no kind is without an adapter.
+    assert set(SourceKind) == READABLE_KINDS
 
 
 # --- Collecting again -----------------------------------------------------------------------------
